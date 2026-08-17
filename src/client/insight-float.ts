@@ -54,7 +54,6 @@ const fab: CSSProperties = {
   cursor: 'pointer', boxShadow: 'var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.25))',
   fontSize: 11, fontWeight: 700, userSelect: 'none', pointerEvents: 'auto',
 }
-const fabBadge: CSSProperties = { position: 'absolute', top: -4, right: -4, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderRadius: 10, fontSize: 10, padding: '1px 5px', fontWeight: 700 }
 const panel: CSSProperties = {
   position: 'fixed', right: 24, bottom: 120, zIndex: 60,
   width: 380, maxWidth: 'calc(100vw - 48px)', height: 480, maxHeight: 'calc(100vh - 160px)',
@@ -112,12 +111,8 @@ function buildContext(): string {
     const doing = todos.filter((t: any) => t.status === 'in_progress').map((t: any) => t.content).slice(0, 3)
     parts.push(`任務:${done}/${todos.length} 完成${doing.length > 0 ? `;進行中:${doing.join('、')}` : ''}`)
   }
-  const scan = bridge.scan as any
-  const scanItems = scan && Array.isArray(scan.items) ? scan.items : []
-  const important = scanItems.filter((i: any) => i.importance >= 2).slice(-8)
-  if (important.length > 0) {
-    parts.push('近期重要洞察:\n' + important.map((i: any) => `- [${i.kind}] ${i.text}`).join('\n'))
-  }
+  // 掃描洞察項不再併入 context(用戶反饋:錯誤類內容無助於價值/方向討論;
+  // 觀測敘事已由 host 端 observation 域提供更完整的價值上下文)
   const file = bridge.file as any
   if (file && Array.isArray(file.files) && file.files.length > 0) {
     const tops = file.files.slice(0, 5).map((f: any) => `${f.path}(寫${f.writes}改${f.edits}${f.err > 0 ? ` ✗${f.err}` : ''})`)
@@ -155,9 +150,6 @@ function FloatingInsightChat(): ReactNode {
 
   const sid = bridge.sessionId
   const st = stateOf(sid)
-  const scan = bridge.scan as any
-  const scanItems = scan && Array.isArray(scan.items) ? scan.items : []
-  const unread = scanItems.filter((i: any) => i.importance >= 2).length
 
   function send(): void {
     const el = inputRef.current
@@ -200,8 +192,7 @@ function FloatingInsightChat(): ReactNode {
       title: '洞察智能體——點擊開啟對話',
       onClick: () => { uiState.expanded = true; force() },
     },
-      createElement('span', null, '洞察'),
-      unread > 0 ? createElement('span', { style: fabBadge }, String(unread)) : null)
+      createElement('span', null, '洞察'))
   }
 
   const bubbles = st.messages.map((m, idx) => {

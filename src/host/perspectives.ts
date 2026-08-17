@@ -1352,6 +1352,88 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         },
       })
 
+      // 潛力路徑生成器(洞察頁創意功能):基於觀測敘事/里程碑生成 2–3 條展開路徑,
+      // 供用戶採納為待辦或傳到主對話框——洞察頁全面服務於價值/路徑/方向。
+      webServer.register({
+        kind: 'exact',
+        path: '/api/insight/paths',
+        handler: async (req: unknown, res: unknown) => {
+          try {
+            const method = String((req as { method?: string }).method || 'GET')
+            if (method !== 'POST') {
+              sendJsonTo(res, 405, { error: 'method not allowed' })
+              return
+            }
+            const raw = await readReqBody(req)
+            let args: { sessionId?: unknown } = {}
+            try {
+              args = JSON.parse(raw || '{}') as typeof args
+            } catch {
+              sendJsonTo(res, 400, { error: 'invalid JSON' })
+              return
+            }
+            const sid = typeof args.sessionId === 'string' ? args.sessionId : ''
+            if (sid === '') {
+              sendJsonTo(res, 400, { error: 'missing sessionId' })
+              return
+            }
+            const stored = await readObs(sid) as { narrative?: string; topic?: string; milestones?: Array<{ kind: string; title: string; why: string }> } | undefined
+            const obsText = stored && typeof stored === 'object'
+              ? `敘事:${stored.narrative || '(無)'}\n主題:${stored.topic || '(無)'}\n里程碑:${(stored.milestones || []).map((m) => `- [${m.kind}] ${m.title} — ${m.why}`).join('\n') || '(無)'}`
+              : '(尚無觀測資料)'
+            const PATHS_SYSTEM = [
+              '你是「路徑規劃師」——為研發項目發現有價值的潛力展開路徑。',
+              '根據觀測資料,生成 2–3 條潛力路徑。只輸出 JSON 數組,不輸出其他任何文字:',
+              '[{"name":"≤12字路徑名","value":"為什麼有價值(≤60字)","effort":"小|中|大","firstStep":"可立即執行的第一步(≤40字)"}]',
+              '規則:基於已有成果與方向展開;不要重複已完成的內容;每條路徑要有差異化(例如:深化現有成果/產品化包裝/生態整合);繁體中文。',
+            ].join('\n')
+            let text = ''
+            for await (const chunk of llmRef.stream({
+              provider: 'deepseek-official',
+              model: 'deepseek-v4-flash',
+              reasoningEffort: 'high',
+              system: PATHS_SYSTEM,
+              messages: [{ id: 'paths-q-1', role: 'user', content: [{ type: 'text', text: obsText }], source: { kind: 'user' } }],
+              temperature: 0.5,
+            })) {
+              if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+            }
+            const start = text.indexOf('[')
+            const end = text.lastIndexOf(']')
+            if (start === -1 || end <= start) {
+              sendJsonTo(res, 502, { error: '模型無輸出或格式異常' })
+              return
+            }
+            try {
+              const arr = JSON.parse(text.slice(start, end + 1)) as unknown
+              const paths = (Array.isArray(arr) ? arr : [])
+                .filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object')
+                .slice(0, 3)
+                .map((p) => ({
+                  name: typeof p.name === 'string' ? p.name.slice(0, 24) : '未命名路徑',
+                  value: typeof p.value === 'string' ? p.value.slice(0, 120) : '',
+                  effort: ['小', '中', '大'].includes(String(p.effort)) ? String(p.effort) : '中',
+                  firstStep: typeof p.firstStep === 'string' ? p.firstStep.slice(0, 80) : '',
+                }))
+              if (paths.length === 0) {
+                sendJsonTo(res, 502, { error: '模型未產生有效路徑' })
+                return
+              }
+              sendJsonTo(res, 200, { paths })
+            } catch {
+              sendJsonTo(res, 502, { error: '路徑 JSON 解析失敗' })
+            }
+          } catch (e) {
+            const msg = String(e && (e as Error).message ? (e as Error).message : e)
+            if (/MISSING_CREDENTIAL|no API key|DEEPSEEK_API_KEY/i.test(msg)) {
+              sendJsonTo(res, 200, { error: '缺少 DeepSeek API key——請到設定 → Models 頁新增 deepseek-official 的 key。' })
+              return
+            }
+            sendJsonTo(res, 200, { error: msg })
+          }
+        },
+      })
+
       // 價值總結卡(本 session 價值總結,LLM 生成)
       webServer.register({
         kind: 'exact',

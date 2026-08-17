@@ -24,8 +24,6 @@ interface ViewProps {
   inputActions?: { setDraft?: (text: string) => void }
 }
 
-const badgeState = { insights: 0 }
-
 const page: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, padding: '16px 20px', fontSize: 13, color: 'var(--dsw-alias-label-primary)' }
 const card: CSSProperties = { background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10, padding: '12px 14px' }
 const cardTitle: CSSProperties = { fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--dsw-alias-label-secondary)' }
@@ -61,50 +59,54 @@ const KIND_META: Record<string, { label: string; color: CSSProperties; badge: CS
   },
 }
 
-function cap(msg: string): ReactNode {
-  return createElement('div', { style: card },
-    createElement('div', { style: cardTitle }, '投影未就緒'),
-    createElement('div', { style: emptyText }, msg))
-}
-
-// 掃描洞察的變化鍵(長度+最大 seq),用於觸發自動洞察重取
-function scanItemsKey(scan: unknown): string {
-  const items = scan && Array.isArray((scan as any).items) ? (scan as any).items : []
-  if (items.length === 0) return '0'
-  return `${items.length}-${items[items.length - 1].seq}`
-}
-
-function countType(mechItems: any[], prefix: string): number {
-  let n = 0
-  for (const it of mechItems) if (typeof it.type === 'string' && it.type.indexOf(prefix) === 0) n += 1
-  return n
-}
-
 // ── 洞察視圖 ─────────────────────────────────────────────────────────────────
+
+// ── 洞察視圖(全面服務於價值、路徑與發展方向)────────────────────────────────
+// 用戶反饋:掃描洞察與風險/攔截數據對他沒有意義——踩坑捕捉轉為後台靜默進記憶
+// (標籤 踩坑,host 側 foldScan/saver 照舊),頁面只留價值/方向/潛力內容。
+
+interface PathItem { name: string; value: string; effort: string; firstStep: string }
+interface ObsLite { insight?: string; topic?: string; milestones?: Array<{ seq: number; kind: string; title: string; why: string }> }
+
+const effortColor: Record<string, CSSProperties> = {
+  小: { color: 'var(--dsw-alias-state-success-primary)', borderColor: 'var(--dsw-alias-state-success-primary)' },
+  中: { color: 'var(--dsw-alias-state-warn-label)', borderColor: 'var(--dsw-alias-state-warn-label)' },
+  大: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
+}
 
 function InsightsView(props: ViewProps): ReactNode {
   const goal = props.useProjection ? (props.useProjection('goal') as any) : undefined
   const todos = props.useProjection ? (props.useProjection('todos') as any) : undefined
-  const scan = props.useProjection ? (props.useProjection('insightsScan') as any) : undefined
   const infra = props.useProjection ? (props.useProjection('infraView') as any) : undefined
-  const file = props.useProjection ? (props.useProjection('fileActivity') as any) : undefined
-  const mech = props.useProjection ? (props.useProjection('mechEvents') as any) : undefined
+  const turns: number = infra && infra.turns && typeof infra.turns.ended === 'number' ? infra.turns.ended : 0
 
   const [summary, setSummary] = useState('')
   const [summaryBusy, setSummaryBusy] = useState(false)
-  const [autoInsight, setAutoInsight] = useState('')
+  const [obs, setObs] = useState<ObsLite>({})
+  const [paths, setPaths] = useState<PathItem[]>([])
+  const [pathsBusy, setPathsBusy] = useState(false)
+  const [adopted, setAdopted] = useState<Record<string, boolean>>({})
   const sid = typeof props.sessionId === 'string' ? props.sessionId : ''
+  const canDraft = props.inputActions && typeof props.inputActions.setDraft === 'function'
+  const setDraft = (text: string): void => { if (canDraft) props.inputActions!.setDraft!(text) }
 
-  // 自動洞察(每 5 輪,host 生成,從觀測域讀取)
+  // 自動洞察 + 里程碑(觀測域;回合結束自動刷新)
   useEffect(() => {
     if (sid === '') return
     let cancelled = false
     fetch(`/api/observation?sessionId=${encodeURIComponent(sid)}`)
       .then((r) => r.json())
-      .then((d: { insight?: string }) => { if (!cancelled) setAutoInsight(typeof d.insight === 'string' ? d.insight : '') })
+      .then((d: ObsLite) => {
+        if (cancelled) return
+        setObs({
+          insight: typeof d.insight === 'string' ? d.insight : '',
+          topic: typeof d.topic === 'string' ? d.topic : '',
+          milestones: Array.isArray(d.milestones) ? d.milestones : [],
+        })
+      })
       .catch(() => { /* 靜默 */ })
     return () => { cancelled = true }
-  }, [sid, scanItemsKey(scan)])
+  }, [sid, turns])
 
   function genSummary(): void {
     if (sid === '' || summaryBusy) return
@@ -122,28 +124,35 @@ function InsightsView(props: ViewProps): ReactNode {
       .finally(() => setSummaryBusy(false))
   }
 
-  const scanItems = scan && Array.isArray(scan.items) ? scan.items : []
-  const savedKeys = new Set(scan && Array.isArray(scan.saved) ? scan.saved.map((s: any) => s.key) : [])
-  const policyBlocks = scan && typeof scan.policyBlocks === 'number' ? scan.policyBlocks : 0
-  const transientErrs = scan && typeof scan.transientErrs === 'number' ? scan.transientErrs : 0
-  const scanReady = scan !== undefined
-  const files = file && Array.isArray(file.files) ? file.files : []
-  const mechItems = mech && Array.isArray(mech.items) ? mech.items : []
-
-  let fileErr = 0
-  let writes = 0
-  for (const f of files) {
-    fileErr += f.err
-    writes += f.writes + f.edits
+  function genPaths(): void {
+    if (sid === '' || pathsBusy) return
+    setPathsBusy(true)
+    fetch('/api/insight/paths', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid }),
+    })
+      .then((r) => r.json())
+      .then((d: { paths?: PathItem[]; error?: string }) => {
+        if (Array.isArray(d.paths)) setPaths(d.paths)
+        else if (typeof d.error === 'string') setPaths([{ name: '(生成失敗)', value: d.error, effort: '中', firstStep: '' }])
+      })
+      .catch((e) => setPaths([{ name: '(呼叫失敗)', value: String(e), effort: '中', firstStep: '' }]))
+      .finally(() => setPathsBusy(false))
   }
-  const turns = infra ? infra.turns.ended : 0
-  const compactions = countType(mechItems, 'compaction/start')
-  const retries = countType(mechItems, 'llm/retry')
-  const rejects = mechItems.filter((i: any) => i.type === 'approval/decided' && /reject|deny|駁回|拒絕/i.test(i.text)).length
 
-  badgeState.insights = scanItems.filter((i: any) => i.importance >= 2).length
+  function adoptPath(p: PathItem): void {
+    if (sid === '') return
+    fetch('/api/notes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, action: 'add-todo', content: `${p.name}:${p.firstStep}`, source: 'auto' }),
+    })
+      .then(() => setAdopted({ ...adopted, [p.name]: true }))
+      .catch(() => { /* 靜默 */ })
+  }
 
-  // ── 價值錨點:shipped goal + todos ──
+  // ── 價值錨點:目標 + 任務(純價值錨,不再放數據統計)──
   const goalSnap = goal && goal.goal ? goal.goal : null
   const goalText = goalSnap && typeof goalSnap.objective === 'string' ? goalSnap.objective : ''
   const goalPhase = goalSnap && typeof goalSnap.phase === 'string' ? goalSnap.phase : ''
@@ -166,38 +175,24 @@ function InsightsView(props: ViewProps): ReactNode {
       createElement('span', { style: statValue }, `${todoDone}/${todoTotal}`),
       createElement('span', { style: statLabel }, `任務完成(進行中 ${todoActive})`)))
   }
-  anchors.push(
-    createElement('div', { key: 'p', style: stat }, createElement('span', { style: statValue }, String(writes)), createElement('span', { style: statLabel }, '寫入/編輯')),
-    createElement('div', { key: 't', style: stat }, createElement('span', { style: statValue }, String(turns)), createElement('span', { style: statLabel }, '回合')))
 
-  // ── 掃描洞察 ──
-  let scanBody: ReactNode
-  if (!scanReady) {
-    scanBody = cap('insightsScan 投影未就緒。')
-  } else if (scanItems.length === 0) {
-    scanBody = createElement('div', { style: emptyText }, '尚無掃描洞察——繼續工作後,工具失敗、用戶糾正、壓縮等訊號會自動出現在這裡。')
-  } else {
-    scanBody = scanItems.slice().reverse().map((it: any) => {
-      const meta = KIND_META[it.kind] || KIND_META.progress
-      const marks = it.importance >= 3 ? '‼ ' : it.importance >= 2 ? '! ' : ''
-      const saved = it.importance >= 2 && savedKeys.has(it.key)
-      return createElement('div', { key: String(it.seq), style: row },
-        createElement('span', { style: meta.badge }, meta.label),
-        createElement('span', { style: { flex: 1, ...meta.color } }, marks + it.text),
-        saved ? createElement('span', { style: { ...badge, color: 'var(--dsw-alias-state-success-primary)' } }, '✓已存') : null)
-    })
-  }
+  // ── 方向演變:從里程碑提煉方向類事件(零額外 LLM 成本)──
+  const DIR_KINDS = ['目標建立', '方向轉變', '突破', '首次成功']
+  const dirMilestones = (Array.isArray(obs.milestones) ? obs.milestones : []).filter((m) => DIR_KINDS.indexOf(m.kind) !== -1)
+
+  const autoInsight = typeof obs.insight === 'string' ? obs.insight : ''
 
   return createElement('div', { style: page },
+    // 價值錨點
     createElement('div', { style: card }, createElement('div', { style: cardTitle }, '價值錨點'), createElement('div', { style: statsRow }, anchors)),
+    // 自動洞察(每 5 輪)
     autoInsight !== ''
       ? createElement('div', { style: card },
           createElement('div', { style: cardTitle }, '自動洞察(每 5 輪更新)'),
           createElement('div', { style: { lineHeight: 1.6, whiteSpace: 'pre-wrap' } }, autoInsight),
-          props.inputActions && typeof props.inputActions.setDraft === 'function'
-            ? createElement('button', { style: actionBtn, onClick: () => props.inputActions!.setDraft!(autoInsight) }, '⤴ 傳送到主對話框')
-            : null)
+          canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(autoInsight) }, '⤴ 傳送到主對話框') : null)
       : null,
+    // 價值總結卡
     createElement('div', { style: card },
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         createElement('div', { style: { ...cardTitle, marginBottom: 0, flex: 1 } }, '價值總結卡'),
@@ -205,21 +200,40 @@ function InsightsView(props: ViewProps): ReactNode {
       summary !== ''
         ? createElement('div', { style: { marginTop: 8 } },
             createElement('div', { style: { lineHeight: 1.6, whiteSpace: 'pre-wrap' } }, summary),
-            props.inputActions && typeof props.inputActions.setDraft === 'function'
-              ? createElement('button', { style: actionBtn, onClick: () => props.inputActions!.setDraft!(summary) }, '⤴ 傳送到主對話框')
-              : null)
+            canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(summary) }, '⤴ 傳送到主對話框') : null)
         : createElement('div', { style: { ...emptyText, marginTop: 6, fontSize: 11 } }, '一鍵生成本 session 的價值總結(可貼進週報/匯報,或傳送到主對話框變成新指令)。')),
+    // 方向演變時間線
+    dirMilestones.length > 0
+      ? createElement('div', { style: card },
+          createElement('div', { style: cardTitle }, `方向演變(${dirMilestones.length})`),
+          dirMilestones.map((m) =>
+            createElement('div', { key: `${m.seq}-${m.title}`, style: row },
+              createElement('span', { style: { ...badge, ...brandColor } }, m.kind),
+              createElement('span', { style: { flex: 1, minWidth: 0 } },
+                createElement('div', { style: { fontWeight: 600 } }, m.title),
+                m.why !== '' ? createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, m.why) : null))),
+          obs.topic !== undefined && obs.topic !== ''
+            ? createElement('div', { style: { ...emptyText, marginTop: 6, fontSize: 11 } }, `當前主題:${obs.topic}`)
+            : null)
+      : null,
+    // 潛力路徑生成器
     createElement('div', { style: card },
-      createElement('div', { style: cardTitle }, `掃描洞察(${scanItems.length})`),
-      scanBody,
-      createElement('div', { style: { ...emptyText, marginTop: 8, fontSize: 11 } }, '軌跡自動掃描:真錯誤按工具聚合去重(踩坑,進記憶)、用戶糾正、壓縮、目標變更、無產出回合。框架攔截(沙箱/審批,規則內保護)與瞬態錯誤(重啟/網絡)只計數不打擾。重要性 ! 以上(≥2)在回合結束自動寫入記憶(標籤:踩坑/洞察),可被 mem_search 檢索。')),
-    createElement('div', { style: card }, createElement('div', { style: cardTitle }, '風險與攔截'), createElement('div', { style: statsRow },
-      createElement('div', { style: stat }, createElement('span', { style: { ...statValue, ...errColor } }, String((infra ? infra.errors : 0) + fileErr)), createElement('span', { style: statLabel }, '失敗')),
-      createElement('div', { style: stat }, createElement('span', { style: statValue }, String(compactions)), createElement('span', { style: statLabel }, '壓縮')),
-      createElement('div', { style: stat }, createElement('span', { style: statValue }, String(retries)), createElement('span', { style: statLabel }, 'LLM重試')),
-      createElement('div', { style: stat }, createElement('span', { style: statValue }, String(rejects)), createElement('span', { style: statLabel }, '審批拒絕')),
-      createElement('div', { style: stat, title: '沙箱/審批/政策攔截——規則內的有益保護,不是 bug' }, createElement('span', { style: statValue }, String(policyBlocks)), createElement('span', { style: statLabel }, '框架攔截(有益)')),
-      createElement('div', { style: stat, title: '重啟/網絡/限流類一次性錯誤' }, createElement('span', { style: statValue }, String(transientErrs)), createElement('span', { style: statLabel }, '瞬態錯誤')))))
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        createElement('div', { style: { ...cardTitle, marginBottom: 0, flex: 1 } }, '潛力路徑'),
+        createElement('button', { style: sendBtnSmall, onClick: genPaths, disabled: pathsBusy }, pathsBusy ? '推演中…' : paths.length > 0 ? '重新推演' : '生成潛力路徑')),
+      paths.length === 0
+        ? createElement('div', { style: { ...emptyText, marginTop: 6, fontSize: 11 } }, '基於觀測敘事與里程碑,推演 2–3 條有價值的展開路徑(價值/成本/第一步),可採納為待辦或傳到主對話框。')
+        : createElement('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+            paths.map((p) =>
+              createElement('div', { key: p.name, style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, padding: '8px 10px' } },
+                createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 } },
+                  createElement('span', { style: { fontWeight: 700, flex: 1, minWidth: 0 } }, p.name),
+                  createElement('span', { style: { ...badge, ...(effortColor[p.effort] || {}) } }, `成本 ${p.effort}`)),
+                p.value !== '' ? createElement('div', { style: { lineHeight: 1.5, fontSize: 12 } }, p.value) : null,
+                p.firstStep !== '' ? createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, `第一步:${p.firstStep}`) : null,
+                createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
+                  canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(`【潛力路徑】${p.name}\n${p.firstStep}`) }, '⤴ 傳到主對話框') : null,
+                  createElement('button', { style: actionBtn, onClick: () => adoptPath(p), disabled: adopted[p.name] === true }, adopted[p.name] === true ? '✓ 已採納' : '＋採納為待辦')))))))
 }
 
 // ── 提醒條(conversation.input.dock)────────────────────────────────────────────
@@ -431,11 +445,7 @@ export function applyPerspectivesViews(ctx: ClientCtx): void {
     }
   }
   ctx.slots.inject('conversation.view', () => registerSafe(
-    {
-      name: 'conversation.view', id: 'insights', order: 40, label: () => {
-        return badgeState.insights > 0 ? `洞察 !${badgeState.insights}` : '洞察'
-      },
-    },
+    { name: 'conversation.view', id: 'insights', order: 40, label: '洞察' },
     InsightsView,
   ))
   ctx.slots.inject('conversation.view', () => registerSafe(

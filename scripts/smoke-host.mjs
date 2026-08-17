@@ -38,7 +38,7 @@ const config = { maxRecords: 5000, healthIntervalMs: 60000, errorAlertThreshold:
 m.apply(ctx, config)
 
 // ── 1. 註冊面斷言 ──
-const expectRoutes = ['/api/observation', '/api/observation/rebuild', '/api/observations', '/api/notes', '/api/prompt/optimize', '/api/insight/summary', '/api/insight/chat']
+const expectRoutes = ['/api/observation', '/api/observation/rebuild', '/api/observations', '/api/notes', '/api/prompt/optimize', '/api/insight/summary', '/api/insight/paths', '/api/insight/chat']
 const expectProjections = ['infraView', 'memActivity', 'fileActivity', 'mechEvents', 'goalTrace', 'insightsScan']
 const expectTools = ['usage_report', 'audit_skills', 'infra_health', 'mem_save', 'mem_search', 'mem_health']
 const expectEvents = ['tools/result', 'agent/error', 'agent/status', 'session/event', 'session/event']
