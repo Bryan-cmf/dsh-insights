@@ -37,7 +37,7 @@ const SYSTEM = [
   '   - 「這些成果裡,哪一個最有價值?」',
   '   - 「技術路線和目標之間最大的落差是什麼?」',
   '4. 協助用戶收斂出可執行的目標陳述,並建議用 /goal 錨定。',
-  '5. 使用繁體中文,簡潔,條列優先,一般 250 字內(用戶要求詳細時例外)。',
+  '5. 使用繁體中文,條列優先;篇幅跟隨問題——簡單問題簡潔答,方向/潛力類問題可充分展開(數百字亦可),不必壓縮字數,像自然對話一樣。',
   '',
   '目標診斷模式(重要):',
   '- 當價值目標未建立、或用戶迷惘時,進入診斷模式:一次只問一個關鍵問題(最多三輪),逐步收斂——',
@@ -189,7 +189,7 @@ export function applyInsightChat(ctx: InsightCtx): void {
           return
         }
         const raw = await readBody(req)
-        let args: { context?: unknown; question?: unknown; sessionId?: unknown } = {}
+        let args: { context?: unknown; question?: unknown; sessionId?: unknown; history?: unknown } = {}
         try {
           args = JSON.parse(raw || '{}') as typeof args
         } catch {
@@ -202,6 +202,20 @@ export function applyInsightChat(ctx: InsightCtx): void {
           return
         }
         const context = typeof args.context === 'string' ? args.context.slice(0, 3000) : ''
+        // 近期對話歷史:讓洞察智能體看得見前文,對話才自然(原來只收單題)
+        let historyBlock = ''
+        if (Array.isArray(args.history)) {
+          const lines: string[] = []
+          for (const h of args.history.slice(-10)) {
+            if (h && typeof h === 'object') {
+              const o = h as Record<string, unknown>
+              const role = o.role === 'assistant' ? '洞察' : '用戶'
+              const t = typeof o.text === 'string' ? o.text.slice(0, 800) : ''
+              if (t !== '') lines.push(`${role}:${t}`)
+            }
+          }
+          if (lines.length > 0) historyBlock = '\n\n【近期對話】\n' + lines.join('\n')
+        }
         let obsBlock = ''
         if (typeof args.sessionId === 'string' && args.sessionId !== '') {
           const obs = await readObservation(args.sessionId)
@@ -220,9 +234,9 @@ export function applyInsightChat(ctx: InsightCtx): void {
             provider: 'deepseek-official',
             model: 'deepseek-v4-flash',
             reasoningEffort: 'max',
-            system: SYSTEM + context + obsBlock,
+            system: SYSTEM + context + obsBlock + historyBlock,
             messages: [{ id: 'ins-q-1', role: 'user', content: [{ type: 'text', text: question }], source: { kind: 'user' } }],
-            maxTokens: 2400,
+            maxTokens: 8000,
             temperature: 0.4,
           })) {
             if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
@@ -236,7 +250,7 @@ export function applyInsightChat(ctx: InsightCtx): void {
           sendJson(res, 502, { error: '模型串流中斷且無輸出' })
           return
         }
-        sendJson(res, 200, { answer: text, thinking: thinking.slice(0, 4000) })
+        sendJson(res, 200, { answer: text, thinking: thinking.slice(0, 8000) })
       } catch (e) {
         const msg = String(e && (e as Error).message ? (e as Error).message : e)
         if (/MISSING_CREDENTIAL|no API key|DEEPSEEK_API_KEY/i.test(msg)) {

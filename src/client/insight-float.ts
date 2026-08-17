@@ -133,12 +133,12 @@ function buildContext(): string {
   return parts.join('\n')
 }
 
-async function askInsight(context: string, question: string, sessionId: string | undefined): Promise<{ answer?: string; thinking?: string; error?: string }> {
+async function askInsight(context: string, question: string, sessionId: string | undefined, history: Array<{ role: string; text: string }>): Promise<{ answer?: string; thinking?: string; error?: string }> {
   try {
     const resp = await fetch('/api/insight/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ context, question, sessionId: sessionId ?? '' }),
+      body: JSON.stringify({ context, question, sessionId: sessionId ?? '', history }),
     })
     const data = (await resp.json()) as { answer?: string; thinking?: string; error?: string }
     return data
@@ -169,7 +169,9 @@ function FloatingInsightChat(): ReactNode {
     if (el) el.value = ''
     force()
     const context = buildContext()
-    void askInsight(context, q, sid).then((res) => {
+    // 帶上近期對話(不含剛推入的當前問題),讓回答有連續性
+    const history = st.messages.slice(0, -1).slice(-10).map((m) => ({ role: m.role, text: m.text.slice(0, 800) }))
+    void askInsight(context, q, sid, history).then((res) => {
       st.busy = false
       if (res && typeof res.answer === 'string' && res.answer !== '') {
         st.messages.push({ role: 'assistant', text: res.answer, thinking: typeof res.thinking === 'string' ? res.thinking : '' })

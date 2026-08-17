@@ -1382,12 +1382,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               ? `敘事:${stored.narrative || '(無)'}\n主題:${stored.topic || '(無)'}\n里程碑:${(stored.milestones || []).map((m) => `- [${m.kind}] ${m.title}`).join('\n') || '(無)'}`
               : '(尚無觀測資料)'
             const SUMMARY_SYSTEM = [
-              '你是價值總結員。根據觀測資料,為本 session 生成一段「價值總結」,可直接貼進週報或匯報。',
+              '你是價值總結員。根據觀測資料,為本 session 生成一份「價值總結」,可直接貼進週報或匯報。',
               '格式:',
-              '1. 一句話總結:本 session 達成了什麼',
-              '2. 三條成果(條列,每條 ≤20 字)',
-              '3. 一句話下一步(≤30 字)',
-              '規則:只根據資料;繁體中文;不臆測;總長 ≤150 字。',
+              '1. 總結段:本 session 的背景、目標與達成(2–4 句)',
+              '2. 成果清單:條列,每條含關鍵細節與交付物名稱(1–2 句),數量依實際成果',
+              '3. 價值與方向:這些成果的價值在哪、方向是否在收斂、有什麼潛力路徑(一段)',
+              '4. 下一步建議:1–2 條,可執行',
+              '規則:只根據資料;繁體中文;不臆測;內容可充分展開,總長 600 字內。',
             ].join('\n')
             let summary = ''
             for await (const chunk of llmRef.stream({
@@ -1396,7 +1397,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               reasoningEffort: 'high',
               system: SUMMARY_SYSTEM,
               messages: [{ id: 'sum-q-1', role: 'user', content: [{ type: 'text', text: obsText }], source: { kind: 'user' } }],
-              maxTokens: 700,
+              maxTokens: 2400,
               temperature: 0.3,
             })) {
               if (chunk.type === 'text-delta' && typeof chunk.text === 'string') summary += chunk.text

@@ -255,12 +255,29 @@ export function applyObservabilityView(ctx: ClientCtx): void {
       const wire = props.useProjection ? (props.useProjection('infraView') as InfraWire | undefined) : undefined
       const fileWire = props.useProjection ? props.useProjection('fileActivity') as any : undefined
       const mechWire = props.useProjection ? props.useProjection('mechEvents') as any : undefined
-      const sections: ReactNode[] = []
+      // 佈局原則(用戶反饋):文字性內容(敘事/里程碑/一覽)在上方方便人類閱讀,
+      // 數據統計類(概覽/檔案/機制/工具/技能/最近執行)在下方備查。
+      const textSections: ReactNode[] = []
+      const dataSections: ReactNode[] = []
 
+      // ── 觀測敘事與里程碑(觀測智能體產物)──
+      textSections.push(createElement(ObsNarrative, {
+        key: 'obs-narrative',
+        sessionId: props.sessionId,
+        refreshKey: mechWire && Array.isArray(mechWire.items) ? mechWire.items.length : 0,
+      }))
+
+      // ── 全項目觀測一覽 ──
+      textSections.push(createElement(ObsOverview, {
+        key: 'obs-overview',
+        refreshKey: mechWire && Array.isArray(mechWire.items) ? mechWire.items.length : 0,
+      }))
+
+      // ── 概覽統計 ──
       if (wire) {
         const toolTotal = wire.tools.reduce((acc, t) => acc + t.calls, 0)
         const skillTotal = wire.skills.reduce((acc, s) => acc + s.calls, 0)
-        sections.push(createElement('div', { key: 'stats', style: card },
+        dataSections.push(createElement('div', { key: 'stats', style: card },
           createElement('div', { style: cardTitle }, '概覽'),
           createElement('div', { style: statsRow },
             createElement('div', { style: stat },
@@ -276,36 +293,11 @@ export function applyObservabilityView(ctx: ClientCtx): void {
               createElement('span', { style: statValue }, String(skillTotal)),
               createElement('span', { style: statLabel }, '技能使用'))),
         ))
-        sections.push(createElement('div', { key: 'tools', style: card },
-          createElement('div', { style: cardTitle }, `工具 TOP ${Math.min(wire.tools.length, 10)}`),
-          ...(wire.tools.length === 0
-            ? [createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-secondary)' } }, '尚無工具呼叫')]
-            : wire.tools.slice(0, 10).map(itemRow)),
-        ))
-        sections.push(createElement('div', { key: 'skills', style: card },
-          createElement('div', { style: cardTitle }, `技能 TOP ${Math.min(wire.skills.length, 8)}`),
-          ...(wire.skills.length === 0
-            ? [createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-secondary)' } }, '尚無技能使用')]
-            : wire.skills.slice(0, 8).map(itemRow)),
-        ))
       } else {
-        sections.push(createElement('div', { key: 'stats', style: card },
+        dataSections.push(createElement('div', { key: 'stats', style: card },
           createElement('div', { style: cardTitle }, '概覽'),
           createElement('div', { style: emptyText }, 'infraView 投影未就緒…')))
       }
-
-      // ── 觀測敘事與里程碑(觀測智能體產物)──
-      sections.push(createElement(ObsNarrative, {
-        key: 'obs-narrative',
-        sessionId: props.sessionId,
-        refreshKey: mechWire && Array.isArray(mechWire.items) ? mechWire.items.length : 0,
-      }))
-
-      // ── 全項目觀測一覽 ──
-      sections.push(createElement(ObsOverview, {
-        key: 'obs-overview',
-        refreshKey: mechWire && Array.isArray(mechWire.items) ? mechWire.items.length : 0,
-      }))
 
       // ── 檔案活動(view-perspectives 投影;缺席時降級)──
       if (fileWire !== undefined) {
@@ -329,7 +321,7 @@ export function applyObservabilityView(ctx: ClientCtx): void {
             ops.length > 0 ? createElement('span', { style: { display: 'flex', gap: 4, flex: 'none' } }, ops) : null,
             createElement('span', { style: f.lastOk ? okColor : errColor, flex: 'none' }, f.lastOk ? '✓' : '✗'))
         })
-        sections.push(createElement('div', { key: 'files', style: card },
+        dataSections.push(createElement('div', { key: 'files', style: card },
           createElement('div', { style: cardTitle }, `檔案活動(${files.length} 個檔案 · 寫入/編輯 ${writes} · 失敗 ${fileErr})`),
           files.length === 0
             ? createElement('div', { style: emptyText }, '尚無檔案活動——讓模型呼叫 read / write / edit / glob / grep 即可在此看到')
@@ -354,7 +346,7 @@ export function applyObservabilityView(ctx: ClientCtx): void {
             createElement('span', { style: toneBadge }, short),
             createElement('span', { style: textCell, title: it.text }, it.text === '' ? it.type : it.text))
         })
-        sections.push(createElement('div', { key: 'mech', style: card },
+        dataSections.push(createElement('div', { key: 'mech', style: card },
           createElement('div', { style: cardTitle }, `機制事件(${mechItems.length})`),
           countCells.length > 0 ? createElement('div', { style: { marginBottom: 8 } }, createElement('div', { style: statsRow }, countCells)) : null,
           mechItems.length === 0
@@ -362,9 +354,25 @@ export function applyObservabilityView(ctx: ClientCtx): void {
             : rows))
       }
 
+      // ── 工具/技能 TOP(純數據,置底區)──
+      if (wire) {
+        dataSections.push(createElement('div', { key: 'tools', style: card },
+          createElement('div', { style: cardTitle }, `工具 TOP ${Math.min(wire.tools.length, 10)}`),
+          ...(wire.tools.length === 0
+            ? [createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-secondary)' } }, '尚無工具呼叫')]
+            : wire.tools.slice(0, 10).map(itemRow)),
+        ))
+        dataSections.push(createElement('div', { key: 'skills', style: card },
+          createElement('div', { style: cardTitle }, `技能 TOP ${Math.min(wire.skills.length, 8)}`),
+          ...(wire.skills.length === 0
+            ? [createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-secondary)' } }, '尚無技能使用')]
+            : wire.skills.slice(0, 8).map(itemRow)),
+        ))
+      }
+
       // ── 最近執行 ──
       if (wire) {
-        sections.push(createElement('div', { key: 'recent', style: card },
+        dataSections.push(createElement('div', { key: 'recent', style: card },
           createElement('div', { style: cardTitle }, '最近執行'),
           ...(wire.recent.length === 0
             ? [createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-secondary)' } }, '尚無執行記錄')]
@@ -372,7 +380,7 @@ export function applyObservabilityView(ctx: ClientCtx): void {
         ))
       }
 
-      return createElement('div', { style: page }, ...sections)
+      return createElement('div', { style: page }, ...textSections, ...dataSections)
     },
   ))
 }
