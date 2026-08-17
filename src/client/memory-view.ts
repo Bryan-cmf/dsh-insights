@@ -55,21 +55,34 @@ const badge: CSSProperties = { fontSize: 11, padding: '1px 6px', borderRadius: 6
 
 // ── 智能模塊(記憶域內容,按模塊分組)─────────────────────────────────────────
 
-const MODULE_ORDER = ['卡點', '失敗', '技術', '學習', '決策', '踩坑', '里程碑', '洞察', '其他']
+const MODULE_ORDER = ['挫折', '技術', '學習', '決策', '里程碑', '其他']
 const MODULE_TONE: Record<string, CSSProperties> = {
-  失敗: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
-  踩坑: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
-  卡點: { color: 'var(--dsw-alias-state-warn-label)', borderColor: 'var(--dsw-alias-state-warn-label)' },
+  挫折: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
   技術: brandColor,
   學習: brandColor,
   決策: brandColor,
 }
 
-function moduleOf(item: MemRow): string {
+// 展示側過濾(用戶:一堆報錯紀錄毫無意義;要的是技術沉澱/發現、挫折、深刻的事):
+// 歷史噪音 row——壓縮/無產出/重試/瞬態/FS 政策攔截/重複失敗升級行——不展示;
+// 新寫入已在源頭攔截(foldScan 只存 fail/corr/goal,政策與瞬態不入記憶)。
+const NOISE_RE = /壓縮開始|無檔案產出|無產出回合|LLM 重試|瞬態錯誤|FS_NOT_OBSERVED|FS_STALE_VERSION|已失敗 \d+ 次/
+
+function displayModule(item: MemRow): string | null {
+  if (NOISE_RE.test(item.content)) return null
+  let m: string
   // 智能記憶 rows:tags = ['智能記憶', 模塊];其他:tags[0] 即模塊
-  if (item.tags.indexOf('智能記憶') !== -1 && typeof item.tags[1] === 'string') return item.tags[1]
-  const first = item.tags[0]
-  return typeof first === 'string' && first !== '' ? first : '其他'
+  if (item.tags.indexOf('智能記憶') !== -1 && typeof item.tags[1] === 'string') m = item.tags[1]
+  else m = typeof item.tags[0] === 'string' && item.tags[0] !== '' ? item.tags[0] : '其他'
+  // 舊詞表歸併:卡點/失敗/踩坑 → 挫折
+  if (m === '卡點' || m === '失敗' || m === '踩坑') m = '挫折'
+  // 舊「洞察」row 按內容歸位:用戶糾正→學習、目標→決策;其餘(壓縮/無產出等)隱藏
+  if (m === '洞察') {
+    if (/用戶糾正/.test(item.content)) return '學習'
+    if (/目標更新|目標建立/.test(item.content)) return '決策'
+    return null
+  }
+  return m
 }
 
 function MemoryModules(props: { refreshKey: number }): ReactNode {
@@ -95,16 +108,20 @@ function MemoryModules(props: { refreshKey: number }): ReactNode {
 
   if (items.length === 0) return null
   const buckets: Record<string, MemRow[]> = {}
+  let shown = 0
   for (const it of items) {
-    const m = moduleOf(it)
+    const m = displayModule(it)
+    if (m === null) continue // 噪音 row 不展示
     if (buckets[m] === undefined) buckets[m] = []
     buckets[m]!.push(it)
+    shown += 1
   }
   const modules = MODULE_ORDER.filter((m) => buckets[m] !== undefined)
     .concat(Object.keys(buckets).filter((m) => MODULE_ORDER.indexOf(m) === -1))
+  if (modules.length === 0) return null
 
   return createElement('div', { style: card },
-    createElement('div', { style: cardTitle }, `智能記憶模塊(${items.length} 條 · 跨 session 累積)`),
+    createElement('div', { style: cardTitle }, `智能記憶模塊(${shown} 條 · 跨 session 累積)`),
     modules.map((m) =>
       createElement('div', { key: m, style: { marginBottom: 6 } },
         createElement('div', { style: { fontSize: 11, fontWeight: 600, marginBottom: 4, color: 'var(--dsw-alias-label-secondary)' } }, `${m}(${buckets[m]!.length})`),

@@ -49,7 +49,10 @@ const emptyText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', li
 const fab: CSSProperties = {
   position: 'fixed', right: 24, bottom: 120, zIndex: 60,
   width: 52, height: 52, borderRadius: '50%',
-  background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-label-on-brand, #fff)',
+  // 夜間模式修復:--dsw-alias-brand-primary 在 dark theme 是近白(neutral-bluish-50),
+  // 而 --dsw-alias-label-on-brand 未定義 → 白字白底隱形。改用雙模式都是品牌藍的
+  // state-business-primary(deepseek-400/500)+ 白字,兩模式皆可讀。
+  background: 'var(--dsw-alias-state-business-primary)', color: '#fff',
   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
   cursor: 'pointer', boxShadow: 'var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.25))',
   fontSize: 11, fontWeight: 700, userSelect: 'none', pointerEvents: 'auto',

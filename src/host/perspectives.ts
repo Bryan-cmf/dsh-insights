@@ -338,13 +338,16 @@ function foldScan(state: ScanState, event: { type: string; data?: any }): ScanSt
         next = pushItem(next, 'risk', `已連續 ${streak} 回合無檔案產出——檢查是否偏離交付目標`, 2, `nowrite:${streak}`)
       }
     }
-    // ── 存檔計畫:重要性 ≥2、未存過的洞察,每回合最多 3 條(純函數,與存檔監聽器一致)──
+    // ── 存檔計畫:重要性 ≥2、未存過,每回合最多 3 條(純函數,與存檔監聽器一致)──
+    // 只把「深刻的事」寫進記憶(用戶方向):真錯誤 fail*(挫折)/用戶糾正 corr/目標 goal;
+    // 壓縮、無產出、審批拒絕、重試、瞬態等過程噪音不進記憶。
     let budget = 3
     const savedKeySet = new Set(state.saved.map((s) => s.key))
     const toSave: InsightItem[] = []
     for (const item of next.items) {
       if (budget <= 0) break
       if (item.importance < 2) continue
+      if (!/^(fail|corr|goal)/.test(item.key)) continue
       if (savedKeySet.has(item.key)) continue
       savedKeySet.add(item.key)
       toSave.push(item)
@@ -707,11 +710,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       const t = await ensureTable()
       if (!t) return false
       const now = Date.now()
-      const isPitfall = item.key.startsWith('fail')
+      // 記憶模塊對齊人腦隱喻(用戶:記住挫折或深刻的事)——
+      // fail→挫折、corr(用戶糾正)→學習、goal(目標更新)→決策;其餘已在存檔計畫攔截
+      const tag = item.key.startsWith('fail') ? '挫折' : item.key.startsWith('corr') ? '學習' : '決策'
       await t.put(`${sid}:${item.key}`, {
         id: nextSaveId(),
-        content: `${isPitfall ? '[踩坑]' : '[洞察]'} ${item.text}`,
-        tags: [isPitfall ? '踩坑' : '洞察', item.kind],
+        content: `[${tag}] ${item.text}`,
+        tags: [tag, item.kind],
         createdAt: now,
         updatedAt: now,
         hits: 0,
@@ -1063,13 +1068,12 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     const MEMORY_AGENT_SYSTEM = [
       '你是「記憶官」——從研發 session 的軌跡與對話中,挑出值得長期記住的內容。',
       '只輸出 JSON 數組,不輸出其他任何文字:',
-      '[{"text":"一句話記憶(≤80字,含關鍵事實/做法/原因)","kind":"卡點|失敗|技術|學習|決策"}]',
-      '模塊定義:',
-      '- 卡點:遇到的阻礙與繞法',
-      '- 失敗:踩坑與教訓(什麼做法失敗了、以後怎麼避免)',
-      '- 技術:有效的方法、模式、指令、寫法',
+      '[{"text":"一句話記憶(≤80字,含關鍵事實/做法/原因)","kind":"挫折|技術|學習|決策"}]',
+      '模塊定義(像人腦:記住挫折或深刻的事;技術的沉澱與發現):',
+      '- 挫折:踩坑碰壁、失敗教訓、卡點與繞法(什麼做法失敗了、以後怎麼避免)',
+      '- 技術:技術沉澱與技術發現——有效的方法、模式、指令、寫法',
       '- 學習:領悟、用戶偏好、用戶明確表達的原則',
-      '- 決策:為什麼這麼選(取捨理由)',
+      '- 決策:為什麼這麼選(取捨理由)、目標的確立與轉向',
       '規則:',
       '1. 政策攔截(沙箱/審批)與瞬態錯誤(重啟/網絡)是規則內事件,不值得記。',
       '2. 不要重複「已有記憶」裡的內容。',
@@ -1080,8 +1084,10 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       try {
         const t = await ensureTable()
         if (!t) return
-        const kinds = ['卡點', '失敗', '技術', '學習', '決策']
-        const k = kinds.indexOf(kind) !== -1 ? kind : '學習'
+        const kinds = ['挫折', '技術', '學習', '決策']
+        // 兼容舊詞表(卡點/失敗→挫折)
+        const legacy = kind === '卡點' || kind === '失敗' ? '挫折' : kind
+        const k = kinds.indexOf(legacy) !== -1 ? legacy : '學習'
         const now = Date.now()
         // key = session + 內容雜湊:同內容重複提取會覆寫同一 row,不產生重複
         await t.put(`memagent:${sid}:${hashKey(text.slice(0, 60))}`, {
