@@ -66,7 +66,7 @@ const KIND_META: Record<string, { label: string; color: CSSProperties; badge: CS
 // (標籤 踩坑,host 側 foldScan/saver 照舊),頁面只留價值/方向/潛力內容。
 
 interface PathItem { name: string; value: string; effort: string; firstStep: string }
-interface ObsLite { insight?: string; topic?: string; milestones?: Array<{ seq: number; kind: string; title: string; why: string }> }
+interface ObsLite { insight?: string; topic?: string; milestones?: Array<{ seq: number; kind: string; title: string; why: string }>; summary?: string; paths?: PathItem[] }
 
 const effortColor: Record<string, CSSProperties> = {
   小: { color: 'var(--dsw-alias-state-success-primary)', borderColor: 'var(--dsw-alias-state-success-primary)' },
@@ -103,6 +103,9 @@ function InsightsView(props: ViewProps): ReactNode {
           topic: typeof d.topic === 'string' ? d.topic : '',
           milestones: Array.isArray(d.milestones) ? d.milestones : [],
         })
+        // 生成物持久化還原:價值總結與潛力路徑切頁不丟,直到下次生成覆寫
+        if (typeof d.summary === 'string' && d.summary !== '') setSummary(d.summary)
+        if (Array.isArray(d.paths) && d.paths.length > 0) setPaths(d.paths)
       })
       .catch(() => { /* 靜默 */ })
     return () => { cancelled = true }

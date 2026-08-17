@@ -33,7 +33,7 @@ export const memorySchema = zod.object({
   expiresAt: zod.number(),
 })
 
-/** observation 域 schema(perspectives 超集版;suggestedTodos/insight 可選,與 insight 模組的子集讀取相容)。 */
+/** observation 域 schema(perspectives 超集版;suggestedTodos/insight/summary/paths 可選,與 insight 模組的子集讀取相容)。 */
 export const obsSchema = zod.object({
   sessionId: zod.string(),
   narrative: zod.string(),
@@ -43,6 +43,11 @@ export const obsSchema = zod.object({
   })),
   suggestedTodos: zod.array(zod.object({ content: zod.string(), why: zod.string() })).optional(),
   insight: zod.string().optional(),
+  /** 洞察頁生成物:價值總結與潛力路徑,持久化到下次生成才覆寫(切頁不丟)。 */
+  summary: zod.string().optional(),
+  paths: zod.array(zod.object({
+    name: zod.string(), value: zod.string(), effort: zod.string(), firstStep: zod.string(),
+  })).optional(),
   turnCount: zod.number(),
   updatedAt: zod.number(),
 })

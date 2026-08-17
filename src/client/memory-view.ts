@@ -1,13 +1,14 @@
 /**
- * dsh-insights · 記憶視圖(原 @bryan-cmf/dsh-vector-memory client)。
+ * dsh-insights · 記憶視圖 v2(原 @bryan-cmf/dsh-vector-memory client)。
  *
- * Registers a 「記憶」view tab (order 30, right of chat / 軌跡 / 觀測) showing
- * this session's memory activity from the `memActivity` session projection,
- * organized through four lenses (v2):
- * - 卡點(blockers)/ 失敗(failures)/ 技術(techniques)/ 學習(learning)
- * 失敗與卡點高亮——記憶的價值在卡點與教訓。
+ * 「記憶」tab(order 30):
+ * 上段·智能模塊——記憶智能體與自動存檔寫入 vector_memory 域的內容,
+ *   按模塊分組(卡點/失敗/技術/學習/決策/踩坑/里程碑/洞察),跨 session 累積;
+ *   記憶智能體每 3 輪從近期軌跡提煉(LLM 理解後歸類,取代 regex 死分類)。
+ * 下段·記憶活動——本 session 的 mem_save/mem_search 活動四透鏡(memActivity 投影)。
+ * 回合結束自動刷新(infraView 投影)+ 30s 輪詢兜底。
  */
-import { createElement, type CSSProperties, type ReactNode } from 'react'
+import { createElement, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -28,6 +29,12 @@ interface ActivityItem {
 interface MemActivity {
   items: ActivityItem[]
 }
+interface MemRow {
+  key: string
+  content: string
+  tags: string[]
+  createdAt: number
+}
 
 const badgeState = { mem: 0, memFail: 0 }
 
@@ -42,7 +49,75 @@ const row: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 8, 
 const textCell: CSSProperties = { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const okColor: CSSProperties = { color: 'var(--dsw-alias-state-success-primary)' }
 const errColor: CSSProperties = { color: 'var(--dsw-alias-state-error-primary)' }
+const brandColor: CSSProperties = { color: 'var(--dsw-alias-brand-primary)' }
 const emptyText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.6 }
+const badge: CSSProperties = { fontSize: 11, padding: '1px 6px', borderRadius: 6, background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)', whiteSpace: 'nowrap', flex: 'none' }
+
+// ── 智能模塊(記憶域內容,按模塊分組)─────────────────────────────────────────
+
+const MODULE_ORDER = ['卡點', '失敗', '技術', '學習', '決策', '踩坑', '里程碑', '洞察', '其他']
+const MODULE_TONE: Record<string, CSSProperties> = {
+  失敗: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
+  踩坑: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
+  卡點: { color: 'var(--dsw-alias-state-warn-label)', borderColor: 'var(--dsw-alias-state-warn-label)' },
+  技術: brandColor,
+  學習: brandColor,
+  決策: brandColor,
+}
+
+function moduleOf(item: MemRow): string {
+  // 智能記憶 rows:tags = ['智能記憶', 模塊];其他:tags[0] 即模塊
+  if (item.tags.indexOf('智能記憶') !== -1 && typeof item.tags[1] === 'string') return item.tags[1]
+  const first = item.tags[0]
+  return typeof first === 'string' && first !== '' ? first : '其他'
+}
+
+function MemoryModules(props: { refreshKey: number }): ReactNode {
+  const [items, setItems] = useState<MemRow[]>([])
+  function load(): void {
+    fetch('/api/memories')
+      .then((r) => r.json())
+      .then((d: { items?: MemRow[] }) => setItems(Array.isArray(d.items) ? d.items : []))
+      .catch(() => { /* 靜默 */ })
+  }
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/memories')
+      .then((r) => r.json())
+      .then((d: { items?: MemRow[] }) => { if (!cancelled) setItems(Array.isArray(d.items) ? d.items : []) })
+      .catch(() => { /* 靜默 */ })
+    return () => { cancelled = true }
+  }, [props.refreshKey])
+  useEffect(() => {
+    const timer = setInterval(() => load(), 30000)
+    return () => clearInterval(timer)
+  }, [])
+
+  if (items.length === 0) return null
+  const buckets: Record<string, MemRow[]> = {}
+  for (const it of items) {
+    const m = moduleOf(it)
+    if (buckets[m] === undefined) buckets[m] = []
+    buckets[m]!.push(it)
+  }
+  const modules = MODULE_ORDER.filter((m) => buckets[m] !== undefined)
+    .concat(Object.keys(buckets).filter((m) => MODULE_ORDER.indexOf(m) === -1))
+
+  return createElement('div', { style: card },
+    createElement('div', { style: cardTitle }, `智能記憶模塊(${items.length} 條 · 跨 session 累積)`),
+    modules.map((m) =>
+      createElement('div', { key: m, style: { marginBottom: 6 } },
+        createElement('div', { style: { fontSize: 11, fontWeight: 600, marginBottom: 4, color: 'var(--dsw-alias-label-secondary)' } }, `${m}(${buckets[m]!.length})`),
+        buckets[m]!.slice(0, 8).map((it) =>
+          createElement('div', { key: it.key, style: row },
+            createElement('span', { style: { ...badge, ...(MODULE_TONE[m] || {}) } }, m),
+            createElement('span', { style: { flex: 1, minWidth: 0, wordBreak: 'break-word' }, title: it.content }, it.content),
+            it.createdAt > 0
+              ? createElement('span', { style: { ...badge, color: 'var(--dsw-alias-label-tertiary)' } }, new Date(it.createdAt).toISOString().slice(5, 10))
+              : null)))))
+}
+
+// ── 記憶活動四透鏡(memActivity 投影,本 session)────────────────────────────
 
 const MEM_LENSES = [
   { id: 'block', title: '卡點', rx: /卡|阻|阻塞|障礙|瓶頸|stuck|block|pending|待解決|困住|無法/ },
@@ -80,35 +155,38 @@ export function applyMemoryView(ctx: ClientCtx): void {
     },
     (props: ViewProps) => {
       const activity = props.useProjection ? (props.useProjection('memActivity') as MemActivity | undefined) : undefined
+      const infra = props.useProjection ? (props.useProjection('infraView') as any) : undefined
+      const turns: number = infra && infra.turns && typeof infra.turns.ended === 'number' ? infra.turns.ended : 0
+
+      let activitySection: ReactNode
       if (!activity) {
-        return createElement('div', { style: page }, '記憶活動尚未就緒(memActivity 投影未回填)…')
+        activitySection = createElement('div', { style: card },
+          createElement('div', { style: cardTitle }, '記憶活動'),
+          createElement('div', { style: emptyText }, '記憶活動尚未就緒(memActivity 投影未回填)…'))
+      } else {
+        const items = Array.isArray(activity.items) ? activity.items : []
+        const buckets: Record<LensId, ActivityItem[]> = { block: [], fail: [], tech: [], learn: [], other: [] }
+        for (const it of items) buckets[lensOf(it)]!.push(it)
+        const saves = items.filter((i) => i.kind === 'mem_save').length
+        const searches = items.filter((i) => i.kind === 'mem_search').length
+        badgeState.mem = saves
+        badgeState.memFail = buckets.fail!.length
+        activitySection = createElement('div', { style: card },
+          createElement('div', { style: cardTitle }, `記憶活動(本 session:存 ${saves} · 查 ${searches})`),
+          createElement('div', { style: statsRow },
+            MEM_LENSES.map((lens) =>
+              createElement('div', { key: lens.id, style: stat },
+                createElement('span', { style: { ...statValue, ...(lens.id === 'fail' ? errColor : {}) } }, String(buckets[lens.id]!.length)),
+                createElement('span', { style: statLabel }, lens.title)))),
+          items.length === 0
+            ? createElement('div', { style: { ...emptyText, marginTop: 8 } }, '尚無記憶活動——讓模型呼叫 mem_save / mem_search 即可在這裡看到')
+            : createElement('div', { style: { marginTop: 8 } },
+                items.slice().reverse().slice(0, 10).map(itemRow)))
       }
-      const items = Array.isArray(activity.items) ? activity.items : []
-      const buckets: Record<LensId, ActivityItem[]> = { block: [], fail: [], tech: [], learn: [], other: [] }
-      for (const it of items) buckets[lensOf(it)]!.push(it)
-      const saves = items.filter((i) => i.kind === 'mem_save').length
-      const searches = items.filter((i) => i.kind === 'mem_search').length
-      badgeState.mem = saves
-      badgeState.memFail = buckets.fail!.length
 
-      const header = createElement('div', { style: card },
-        createElement('div', { style: cardTitle }, '記憶概覽'),
-        createElement('div', { style: statsRow },
-          createElement('div', { style: stat }, createElement('span', { style: statValue }, String(saves)), createElement('span', { style: statLabel }, '已儲存')),
-          createElement('div', { style: stat }, createElement('span', { style: statValue }, String(searches)), createElement('span', { style: statLabel }, '已檢索')),
-          createElement('div', { style: stat }, createElement('span', { style: { ...statValue, ...errColor } }, String(buckets.fail!.length)), createElement('span', { style: statLabel }, '失敗/卡點'))),
-        createElement('div', { style: { ...emptyText, marginTop: 8 } }, '記憶的價值在卡點與教訓——讓模型用 mem_save 記錄失敗、技術與學習,避免重蹈覆轍。'))
-
-      const lensCards = MEM_LENSES.map((lens) => {
-        const list = buckets[lens.id]!.slice().reverse().slice(0, 10)
-        return createElement('div', { key: lens.id, style: card },
-          createElement('div', { style: cardTitle }, `${lens.title}(${buckets[lens.id]!.length})`),
-          list.length === 0 ? createElement('div', { style: emptyText }, '尚無此類記憶') : list.map(itemRow))
-      })
-
-      return createElement('div', { style: page }, header, lensCards)
+      return createElement('div', { style: page },
+        createElement(MemoryModules, { key: 'modules', refreshKey: turns }),
+        activitySection)
     },
   ))
 }
-
-

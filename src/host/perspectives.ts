@@ -401,6 +401,7 @@ export interface ProjectionCtx {
 
 interface DigestItem { seq: number; kind: string; text: string }
 interface Milestone { seq: number; kind: string; title: string; why: string; evidenceSeq: number }
+interface PathRecord { name: string; value: string; effort: string; firstStep: string }
 interface ObsState {
   digest: DigestItem[]
   lastObservedIdx: number
@@ -410,10 +411,15 @@ interface ObsState {
   suggestedTodos: Array<{ content: string; why: string }>
   insight: string
   turnsSinceInsight: number
+  /** 記憶智能體節奏:每 3 輪從增量 digest 提取長期記憶。 */
+  turnsSinceMem: number
   turnCount: number
   seq: number
   pending: Record<string, { name: string; path: string }>
   digestCap: number
+  /** 洞察頁生成物——持久化,直到用戶下次生成才覆寫(切頁不丟)。 */
+  summary: string
+  paths: PathRecord[]
 }
 
 interface LlmLike {
@@ -488,7 +494,7 @@ const notesSchema = zod.object({
 })
 
 function initObs(): ObsState {
-  return { digest: [], lastObservedIdx: 0, narrative: '', topic: '', milestones: [], suggestedTodos: [], insight: '', turnsSinceInsight: 0, turnCount: 0, seq: 0, pending: {}, digestCap: 120 }
+  return { digest: [], lastObservedIdx: 0, narrative: '', topic: '', milestones: [], suggestedTodos: [], insight: '', turnsSinceInsight: 0, turnsSinceMem: 0, turnCount: 0, seq: 0, pending: {}, digestCap: 120, summary: '', paths: [] }
 }
 
 function digestPush(state: ObsState, kind: string, text: string): ObsState {
@@ -588,8 +594,8 @@ function foldDigest(state: ObsState, event: { type: string; data?: any }): ObsSt
 // 字串感知的平衡大括號截取:敘事文本常含「}」(程式碼/設定檔描述),
 // naive 首{-尾} 切法會誤切,導致整段 JSON 解析失敗(增量觀測全天失敗的真兇之一)。
 // 未閉合(真截斷)回 null。
-function extractFirstJsonObject(raw: string): string | null {
-  const start = raw.indexOf('{')
+function extractFirstBalanced(raw: string, open: string, close: string): string | null {
+  const start = raw.indexOf(open)
   if (start === -1) return null
   let depth = 0
   let inStr = false
@@ -603,14 +609,16 @@ function extractFirstJsonObject(raw: string): string | null {
       continue
     }
     if (c === '"') { inStr = true; continue }
-    if (c === '{') depth += 1
-    else if (c === '}') {
+    if (c === open) depth += 1
+    else if (c === close) {
       depth -= 1
       if (depth === 0) return raw.slice(start, i + 1)
     }
   }
   return null
 }
+function extractFirstJsonObject(raw: string): string | null { return extractFirstBalanced(raw, '{', '}') }
+function extractFirstJsonArray(raw: string): string | null { return extractFirstBalanced(raw, '[', ']') }
 
 function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
   const slice = extractFirstJsonObject(raw)
@@ -819,10 +827,33 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           suggestedTodos: st.suggestedTodos,
           insight: st.insight,
           turnCount: st.turnCount,
+          summary: st.summary,
+          paths: st.paths,
           updatedAt: Date.now(),
         })
       } catch {
         // 持久化失敗靜默降級,不影響主流程
+      }
+    }
+
+    // 洞察頁生成物(價值總結/潛力路徑)持久化:切頁不丟,直到下次生成覆寫。
+    // 有記憶體狀態走 persistObs;非活躍 session 對儲存做 read-modify-write。
+    async function persistGenerated(sid: string, patch: { summary?: string; paths?: PathRecord[] }): Promise<void> {
+      try {
+        const entry = obsStates.get(sid)
+        if (entry !== undefined) {
+          if (typeof patch.summary === 'string') entry.summary = patch.summary
+          if (Array.isArray(patch.paths)) entry.paths = patch.paths
+          await persistObs(sid, entry)
+          return
+        }
+        const stored = await readObs(sid)
+        if (stored && typeof stored === 'object') {
+          const t = await ensureObsTable()
+          if (t) await t.put(sid, { ...(stored as Record<string, unknown>), ...patch, updatedAt: Date.now() })
+        }
+      } catch {
+        // 靜默
       }
     }
 
@@ -1025,6 +1056,112 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       await persistObs(sessionId, st)
     }
 
+    // ── 記憶智能體:每 3 輪從近期軌跡提煉長期記憶,LLM 理解後歸入模塊 ──
+    // (用戶方向:記憶也該是智能體——跟踪掃描軌跡與對話,分類進記憶的不同模塊;
+    //  取代記憶頁原本的 regex 死分類。複用觀測 digest 流,不另起折疊。)
+    const MEMORY_AGENT_SYSTEM = [
+      '你是「記憶官」——從研發 session 的軌跡與對話中,挑出值得長期記住的內容。',
+      '只輸出 JSON 數組,不輸出其他任何文字:',
+      '[{"text":"一句話記憶(≤80字,含關鍵事實/做法/原因)","kind":"卡點|失敗|技術|學習|決策"}]',
+      '模塊定義:',
+      '- 卡點:遇到的阻礙與繞法',
+      '- 失敗:踩坑與教訓(什麼做法失敗了、以後怎麼避免)',
+      '- 技術:有效的方法、模式、指令、寫法',
+      '- 學習:領悟、用戶偏好、用戶明確表達的原則',
+      '- 決策:為什麼這麼選(取捨理由)',
+      '規則:',
+      '1. 政策攔截(沙箱/審批)與瞬態錯誤(重啟/網絡)是規則內事件,不值得記。',
+      '2. 不要重複「已有記憶」裡的內容。',
+      '3. 沒有值得記的就回空數組;至多 3 條;繁體中文。',
+    ].join('\n')
+
+    async function saveAgentMemory(sid: string, text: string, kind: string): Promise<void> {
+      try {
+        const t = await ensureTable()
+        if (!t) return
+        const kinds = ['卡點', '失敗', '技術', '學習', '決策']
+        const k = kinds.indexOf(kind) !== -1 ? kind : '學習'
+        const now = Date.now()
+        // key = session + 內容雜湊:同內容重複提取會覆寫同一 row,不產生重複
+        await t.put(`memagent:${sid}:${hashKey(text.slice(0, 60))}`, {
+          id: `mema-${now.toString(36)}-${hashKey(text.slice(0, 20))}`,
+          content: `[${k}] ${text}`,
+          tags: ['智能記憶', k],
+          createdAt: now,
+          updatedAt: now,
+          hits: 0,
+          expiresAt: now + 90 * 86400000,
+        })
+      } catch {
+        // 靜默降級
+      }
+    }
+
+    async function extractMemories(sessionId: string, st: ObsState): Promise<void> {
+      const recent = st.digest.slice(-30)
+      const meaningful = recent.filter((i) => i.kind !== 'mech')
+      if (meaningful.length < 3) {
+        st.turnsSinceMem = 0
+        return
+      }
+      // 列出近期記憶避免重複提取
+      let existing = ''
+      try {
+        const t = await ensureTable()
+        const entriesFn = t ? (t as unknown as { entries?: () => Iterable<[string, unknown]> }).entries : undefined
+        if (typeof entriesFn === 'function') {
+          const rows: string[] = []
+          for (const [, rec] of entriesFn.call(t)) {
+            const r = rec as { content?: string }
+            if (r && typeof r.content === 'string') rows.push(r.content.slice(0, 60))
+          }
+          existing = rows.slice(-15).join('\n')
+        }
+      } catch {
+        // 拿不到清單也照常提取
+      }
+      const input = meaningful.map((i) => `#${i.seq} [${i.kind}] ${i.text}`).join('\n')
+      const prompt = `【近期軌跡與對話】\n${input}\n【已有記憶(不要重複)】\n${existing || '(無)'}`
+      let raw = ''
+      try {
+        for await (const chunk of llmRef.stream({
+          provider: 'deepseek-official',
+          model: 'deepseek-v4-flash',
+          reasoningEffort: 'high',
+          system: MEMORY_AGENT_SYSTEM,
+          messages: [{ id: 'mem-q-1', role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }],
+          temperature: 0.2,
+        })) {
+          if (chunk.type === 'text-delta' && typeof chunk.text === 'string') raw += chunk.text
+        }
+      } catch (e) {
+        console.error('[memory-agent] llm 呼叫失敗', sessionId, String(e && (e as Error).message ? (e as Error).message : e))
+        return
+      }
+      st.turnsSinceMem = 0
+      if (raw.trim() === '') {
+        console.error('[memory-agent] 輸出為空', sessionId)
+        return
+      }
+      const slice = extractFirstJsonArray(raw)
+      if (slice === null) {
+        console.error('[memory-agent] 輸出無法解析,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200))
+        return
+      }
+      try {
+        const arr = JSON.parse(slice) as unknown
+        const items = (Array.isArray(arr) ? arr : [])
+          .filter((it): it is Record<string, unknown> => it !== null && typeof it === 'object')
+          .filter((it) => typeof it.text === 'string' && (it.text as string).trim() !== '')
+          .slice(0, 3)
+        for (const it of items) {
+          await saveAgentMemory(sessionId, (it.text as string).trim().slice(0, 120), typeof it.kind === 'string' ? it.kind : '')
+        }
+      } catch {
+        console.error('[memory-agent] JSON 解析失敗', sessionId)
+      }
+    }
+
     const obsStates = new Map<string, ObsState>()
     const initInFlight = new Set<string>()
     const sessionQuery = ctx.sessionQuery
@@ -1057,11 +1194,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         try {
           const stored = await readObs(sid)
           if (stored && typeof stored === 'object') {
-            const s = stored as { narrative?: unknown; topic?: unknown; milestones?: unknown; turnCount?: unknown }
+            const s = stored as { narrative?: unknown; topic?: unknown; milestones?: unknown; turnCount?: unknown; summary?: unknown; paths?: unknown }
             if (typeof s.narrative === 'string') st.narrative = s.narrative
             if (typeof s.topic === 'string') st.topic = s.topic
             if (Array.isArray(s.milestones)) st.milestones = s.milestones as Milestone[]
             if (typeof s.turnCount === 'number') st.turnCount = s.turnCount
+            if (typeof s.summary === 'string') st.summary = s.summary
+            if (Array.isArray(s.paths)) st.paths = s.paths as PathRecord[]
           }
           if (st.narrative !== '') return // 已有敘事(恢復成功),不需初始化
           if (sessionQuery === undefined) return
@@ -1098,6 +1237,9 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           // 自動洞察:每 5 輪觸發一次(基於最新敘事)
           st.turnsSinceInsight += 1
           if (st.turnsSinceInsight >= 5) void generateInsight(sid, st)
+          // 記憶智能體:每 3 輪從近期軌跡提煉長期記憶歸入模塊
+          st.turnsSinceMem += 1
+          if (st.turnsSinceMem >= 3) void extractMemories(sid, st)
         })
       }
     })
@@ -1183,6 +1325,44 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
             obsStates.set(sid, st)
             await generateInsight(sid, st) // 重建後立即產生一次自動洞察
             sendJsonTo(res, 200, { ok: true, parsedCount, turnCount: st.turnCount, narrative: st.narrative, topic: st.topic, insight: st.insight })
+          } catch (e) {
+            sendJsonTo(res, 500, { error: String(e && (e as Error).message ? (e as Error).message : e) })
+          }
+        },
+      })
+
+      // 記憶域一覽(記憶頁「智能模塊」資料源:讀 vector_memory 全部 row,
+      // 按 tags[0] 分模塊展示——智能記憶/踩坑/里程碑/洞察;跨 session 累積)
+      webServer.register({
+        kind: 'exact',
+        path: '/api/memories',
+        handler: async (_req: unknown, res: unknown) => {
+          try {
+            const t = await ensureTable()
+            if (!t) {
+              sendJsonTo(res, 200, { items: [] })
+              return
+            }
+            const entriesFn = (t as unknown as { entries?: () => Iterable<[string, unknown]> }).entries
+            if (typeof entriesFn !== 'function') {
+              sendJsonTo(res, 200, { items: [] })
+              return
+            }
+            interface MemRow { key: string; content: string; tags: string[]; createdAt: number }
+            const items: MemRow[] = []
+            for (const [key, row] of entriesFn.call(t)) {
+              const r = row as { content?: unknown; tags?: unknown; createdAt?: unknown }
+              if (r && typeof r === 'object' && typeof r.content === 'string') {
+                items.push({
+                  key,
+                  content: r.content,
+                  tags: Array.isArray(r.tags) ? (r.tags as unknown[]).filter((x): x is string => typeof x === 'string') : [],
+                  createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+                })
+              }
+            }
+            items.sort((a, b) => b.createdAt - a.createdAt)
+            sendJsonTo(res, 200, { items: items.slice(0, 120) })
           } catch (e) {
             sendJsonTo(res, 500, { error: String(e && (e as Error).message ? (e as Error).message : e) })
           }
@@ -1466,6 +1646,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
                 sendJsonTo(res, 502, { error: '模型未產生有效路徑' })
                 return
               }
+              await persistGenerated(sid, { paths }) // 持久化:切頁不丟,下次生成才覆寫
               sendJsonTo(res, 200, { paths })
             } catch {
               sendJsonTo(res, 502, { error: '路徑 JSON 解析失敗' })
@@ -1533,6 +1714,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               sendJsonTo(res, 502, { error: '模型無輸出' })
               return
             }
+            await persistGenerated(sid, { summary }) // 持久化:切頁不丟,下次生成才覆寫
             sendJsonTo(res, 200, { summary })
           } catch (e) {
             const msg = String(e && (e as Error).message ? (e as Error).message : e)
