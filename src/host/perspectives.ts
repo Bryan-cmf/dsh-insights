@@ -232,7 +232,8 @@ function initScan(): ScanState {
 type ErrClass = 'policy' | 'transient' | 'real'
 function classifyError(code: string, msg: string): ErrClass {
   const s = `${code} ${msg}`.toLowerCase()
-  if (/sandbox|file access denied|operation not permitted|eperm|eacces|requires reading|observation-policy|approval|審批/.test(s)) return 'policy'
+  // fs_not_observed(編輯前須讀取)/fs_stale_version(檔案版本過期)同屬框架保護性攔截
+  if (/sandbox|file access denied|operation not permitted|eperm|eacces|requires reading|observation-policy|fs_not_observed|fs_stale_version|approval|審批/.test(s)) return 'policy'
   if (/interrupted|no result was durably recorded|restart|kickstart|etimedout|econnreset|econnrefused|eai_again|rate.?limit|overloaded|socket/.test(s)) return 'transient'
   return 'real'
 }
