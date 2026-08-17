@@ -19,6 +19,7 @@ interface ClientCtx {
 }
 interface ViewProps {
   useProjection?: <K extends string>(key: K) => unknown
+  sessionId?: string
 }
 interface ActivityItem {
   seq: number
@@ -85,22 +86,25 @@ function displayModule(item: MemRow): string | null {
   return m
 }
 
-function MemoryModules(props: { refreshKey: number }): ReactNode {
+function MemoryModules(props: { refreshKey: number; sessionId?: string }): ReactNode {
   const [items, setItems] = useState<MemRow[]>([])
+  // 按項目隔離:只載入本項目(同 cwd)session 的記憶
+  const sid = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : ''
+  const url = sid !== '' ? `/api/memories?sessionId=${encodeURIComponent(sid)}` : '/api/memories'
   function load(): void {
-    fetch('/api/memories')
+    fetch(url)
       .then((r) => r.json())
       .then((d: { items?: MemRow[] }) => setItems(Array.isArray(d.items) ? d.items : []))
       .catch(() => { /* 靜默 */ })
   }
   useEffect(() => {
     let cancelled = false
-    fetch('/api/memories')
+    fetch(url)
       .then((r) => r.json())
       .then((d: { items?: MemRow[] }) => { if (!cancelled) setItems(Array.isArray(d.items) ? d.items : []) })
       .catch(() => { /* 靜默 */ })
     return () => { cancelled = true }
-  }, [props.refreshKey])
+  }, [props.refreshKey, sid])
   useEffect(() => {
     const timer = setInterval(() => load(), 30000)
     return () => clearInterval(timer)
@@ -121,7 +125,7 @@ function MemoryModules(props: { refreshKey: number }): ReactNode {
   if (modules.length === 0) return null
 
   return createElement('div', { style: card },
-    createElement('div', { style: cardTitle }, `智能記憶模塊(${shown} 條 · 跨 session 累積)`),
+    createElement('div', { style: cardTitle }, `智能記憶模塊(${shown} 條 · 本項目累積)`),
     modules.map((m) =>
       createElement('div', { key: m, style: { marginBottom: 6 } },
         createElement('div', { style: { fontSize: 11, fontWeight: 600, marginBottom: 4, color: 'var(--dsw-alias-label-secondary)' } }, `${m}(${buckets[m]!.length})`),
@@ -202,7 +206,7 @@ export function applyMemoryView(ctx: ClientCtx): void {
       }
 
       return createElement('div', { style: page },
-        createElement(MemoryModules, { key: 'modules', refreshKey: turns }),
+        createElement(MemoryModules, { key: 'modules', refreshKey: turns, sessionId: props.sessionId }),
         activitySection)
     },
   ))

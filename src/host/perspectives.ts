@@ -624,11 +624,49 @@ function extractFirstBalanced(raw: string, open: string, close: string): string 
 function extractFirstJsonObject(raw: string): string | null { return extractFirstBalanced(raw, '{', '}') }
 function extractFirstJsonArray(raw: string): string | null { return extractFirstBalanced(raw, '[', ']') }
 
-function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+// 模型常在 JSON 字串值裡輸出字面換行/Tab(pretty-print 習慣)——JSON.parse 拒收
+// 字串內裸控制符(當前進程增量失敗的主因之一)。字串狀態下轉義,保住內容。
+function sanitizeJsonControlChars(s: string): string {
+  let out = ''
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (inStr) {
+      if (esc) { out += c; esc = false; continue }
+      if (c === '\\') { out += c; esc = true; continue }
+      if (c === '"') { out += c; inStr = false; continue }
+      if (c === '\n') { out += '\\n'; continue }
+      if (c === '\r') { out += '\\r'; continue }
+      if (c === '\t') { out += '\\t'; continue }
+      if (c.charCodeAt(0) < 0x20) { out += ' '; continue }
+      out += c
+      continue
+    }
+    if (c === '"') inStr = true
+    out += c
+  }
+  return out
+}
+
+// 寬鬆 JSON 解析:平衡擷取 → 直接 parse → 控制符清洗後 parse → null
+function parseJsonLoose(raw: string): Record<string, unknown> | null {
   const slice = extractFirstJsonObject(raw)
   if (slice === null) return null
+  try { return JSON.parse(slice) as Record<string, unknown> } catch { /* 嘗試清洗 */ }
+  try { return JSON.parse(sanitizeJsonControlChars(slice)) as Record<string, unknown> } catch { return null }
+}
+function parseJsonArrayLoose(raw: string): unknown[] | null {
+  const slice = extractFirstJsonArray(raw)
+  if (slice === null) return null
+  try { const v = JSON.parse(slice); return Array.isArray(v) ? v : null } catch { /* 嘗試清洗 */ }
+  try { const v = JSON.parse(sanitizeJsonControlChars(slice)); return Array.isArray(v) ? v : null } catch { return null }
+}
+
+function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+  const obj = parseJsonLoose(raw)
+  if (obj === null) return null
   try {
-    const obj = JSON.parse(slice) as Record<string, unknown>
     if (typeof obj.narrative !== 'string') return null
     const rawMs = Array.isArray(obj.milestones) ? obj.milestones : []
     const milestones: Milestone[] = rawMs
@@ -897,18 +935,18 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     }
 
     // 增量模式的段落解析:{"section": "...", "topic": "...", "milestones": [...], "suggestedTodos": [...]}
+    // 增量只要求 section 存在;里程碑/待辦解析失敗不連坐(寬鬆解析)。
     function parseChunkJson(raw: string): { section: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
-      const slice = extractFirstJsonObject(raw)
-      if (slice === null) return null
-      try {
-        const obj = JSON.parse(slice) as Record<string, unknown>
-        const parsed = parseObsJson(slice) // 共用里程碑/待辦解析(slice 已是平衡擷取)
-        if (parsed === null) return null
-        const section = typeof obj.section === 'string' ? obj.section : (typeof obj.narrative === 'string' ? obj.narrative : '')
-        if (section === '') return null
-        return { section: section.slice(0, 1200), topic: parsed.topic, milestones: parsed.milestones, suggestedTodos: parsed.suggestedTodos }
-      } catch {
-        return null
+      const obj = parseJsonLoose(raw)
+      if (obj === null) return null
+      const section = typeof obj.section === 'string' ? obj.section : (typeof obj.narrative === 'string' ? obj.narrative : '')
+      if (section === '') return null
+      const parsed = parseObsJson(raw) // 里程碑/待辦(narrative 缺失不影響此處回傳)
+      return {
+        section: section.slice(0, 1200),
+        topic: parsed !== null ? parsed.topic : (typeof obj.topic === 'string' ? (obj.topic as string).slice(0, 100) : ''),
+        milestones: parsed !== null ? parsed.milestones : [],
+        suggestedTodos: parsed !== null ? parsed.suggestedTodos : [],
       }
     }
 
@@ -973,7 +1011,20 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       }
       const parsed = parseChunkJson(raw)
       if (parsed === null) {
-        console.error('[observation] 增量輸出無法解析 JSON,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200))
+        // 兜底打撈:JSON 全毀時至少取出 section 文本,敘事不中斷(里程碑/待辦本輪放棄)
+        const m = /"section"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/.exec(raw)
+        const salvaged = m && typeof m[1] === 'string'
+          ? m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
+          : ''
+        if (salvaged.length >= 40) {
+          console.error('[observation] 增量 JSON 毀損,打撈 section(' + salvaged.length + ' 字),session', sessionId)
+          st.narrative = appendSection(st.narrative, salvaged.slice(0, 1200))
+          st.turnCount += 1
+          st.lastObservedIdx = st.digest.length
+          await persistObs(sessionId, st)
+          return
+        }
+        console.error('[observation] 增量輸出無法解析 JSON,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200), 'raw 尾:', raw.slice(-120))
         return
       }
       st.narrative = appendSection(st.narrative, parsed.section)
@@ -1150,14 +1201,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         console.error('[memory-agent] 輸出為空', sessionId)
         return
       }
-      const slice = extractFirstJsonArray(raw)
-      if (slice === null) {
-        console.error('[memory-agent] 輸出無法解析,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200))
+      const arr = parseJsonArrayLoose(raw)
+      if (arr === null) {
+        console.error('[memory-agent] 輸出無法解析,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200), 'raw 尾:', raw.slice(-120))
         return
       }
       try {
-        const arr = JSON.parse(slice) as unknown
-        const items = (Array.isArray(arr) ? arr : [])
+        const items = arr
           .filter((it): it is Record<string, unknown> => it !== null && typeof it === 'object')
           .filter((it) => typeof it.text === 'string' && (it.text as string).trim() !== '')
           .slice(0, 3)
@@ -1338,13 +1388,35 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         },
       })
 
-      // 記憶域一覽(記憶頁「智能模塊」資料源:讀 vector_memory 全部 row,
-      // 按 tags[0] 分模塊展示——智能記憶/踩坑/里程碑/洞察;跨 session 累積)
+      // 記憶域一覽(記憶頁「智能模塊」資料源)。按項目隔離(用戶要求):
+      // 帶 sessionId 時解析其 cwd,只回同項目全部 session 的記憶 row
+      // (key 前綴 <sid>: / memagent:<sid>: / ms:<sid>:);不帶則回全部。
       webServer.register({
         kind: 'exact',
         path: '/api/memories',
-        handler: async (_req: unknown, res: unknown) => {
+        handler: async (req: unknown, res: unknown) => {
           try {
+            const url = new URL(String((req as { url?: string }).url || ''), 'http://localhost')
+            const sidParam = url.searchParams.get('sessionId') || ''
+            // sessionId → cwd → 同項目所有 session id(資訊隔離的範圍)
+            let scopeSids: Set<string> | null = null
+            if (sidParam !== '') {
+              scopeSids = new Set([sidParam])
+              if (sessionQuery !== undefined) {
+                try {
+                  const sessions = await sessionQuery.listSessions()
+                  const me = sessions.find((s) => s.header && s.header.id === sidParam)
+                  const cwd = me && me.header && typeof me.header.cwd === 'string' ? me.header.cwd : ''
+                  if (cwd !== '') {
+                    for (const s of sessions) {
+                      if (s.header && s.header.cwd === cwd && typeof s.header.id === 'string') scopeSids.add(s.header.id)
+                    }
+                  }
+                } catch {
+                  // 解析失敗退回本 session 範圍
+                }
+              }
+            }
             const t = await ensureTable()
             if (!t) {
               sendJsonTo(res, 200, { items: [] })
@@ -1358,6 +1430,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
             interface MemRow { key: string; content: string; tags: string[]; createdAt: number }
             const items: MemRow[] = []
             for (const [key, row] of entriesFn.call(t)) {
+              if (scopeSids !== null) {
+                let inScope = false
+                for (const s of scopeSids) {
+                  if (key.startsWith(`${s}:`) || key.indexOf(`:${s}:`) !== -1) { inScope = true; break }
+                }
+                if (!inScope) continue
+              }
               const r = row as { content?: unknown; tags?: unknown; createdAt?: unknown }
               if (r && typeof r === 'object' && typeof r.content === 'string') {
                 items.push({
@@ -1632,15 +1711,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
             })) {
               if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
             }
-            const start = text.indexOf('[')
-            const end = text.lastIndexOf(']')
-            if (start === -1 || end <= start) {
+            const arr = parseJsonArrayLoose(text) // 平衡擷取 + 控制符清洗(與觀測管線同源)
+            if (arr === null) {
               sendJsonTo(res, 502, { error: '模型無輸出或格式異常' })
               return
             }
             try {
-              const arr = JSON.parse(text.slice(start, end + 1)) as unknown
-              const paths = (Array.isArray(arr) ? arr : [])
+              const paths = arr
                 .filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object')
                 .slice(0, 3)
                 .map((p) => ({
