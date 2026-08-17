@@ -1,7 +1,7 @@
 {
   "name": "@bryan-cmf/dsh-insights",
   "description": "DSH-Plugin: value-oriented observation & insight pipeline — four views (觀測/記憶/洞察/筆記) + two agents (觀測智能體 rolling chronicle & milestones; 洞察智能體 deep-thinking direction advisor with floating chat). Merged from dsh-infra-observability, dsh-vector-memory, dsh-view-perspectives, dsh-insight-agent.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

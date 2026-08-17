@@ -585,12 +585,38 @@ function foldDigest(state: ObsState, event: { type: string; data?: any }): ObsSt
   return state
 }
 
-function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+// 字串感知的平衡大括號截取:敘事文本常含「}」(程式碼/設定檔描述),
+// naive 首{-尾} 切法會誤切,導致整段 JSON 解析失敗(增量觀測全天失敗的真兇之一)。
+// 未閉合(真截斷)回 null。
+function extractFirstJsonObject(raw: string): string | null {
   const start = raw.indexOf('{')
-  const end = raw.lastIndexOf('}')
-  if (start === -1 || end <= start) return null
+  if (start === -1) return null
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{') depth += 1
+    else if (c === '}') {
+      depth -= 1
+      if (depth === 0) return raw.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
+function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+  const slice = extractFirstJsonObject(raw)
+  if (slice === null) return null
   try {
-    const obj = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>
+    const obj = JSON.parse(slice) as Record<string, unknown>
     if (typeof obj.narrative !== 'string') return null
     const rawMs = Array.isArray(obj.milestones) ? obj.milestones : []
     const milestones: Milestone[] = rawMs
@@ -835,12 +861,11 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
 
     // 增量模式的段落解析:{"section": "...", "topic": "...", "milestones": [...], "suggestedTodos": [...]}
     function parseChunkJson(raw: string): { section: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
-      const start = raw.indexOf('{')
-      const end = raw.lastIndexOf('}')
-      if (start === -1 || end <= start) return null
+      const slice = extractFirstJsonObject(raw)
+      if (slice === null) return null
       try {
-        const obj = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>
-        const parsed = parseObsJson(raw) // 共用里程碑/待辦解析
+        const obj = JSON.parse(slice) as Record<string, unknown>
+        const parsed = parseObsJson(slice) // 共用里程碑/待辦解析(slice 已是平衡擷取)
         if (parsed === null) return null
         const section = typeof obj.section === 'string' ? obj.section : (typeof obj.narrative === 'string' ? obj.narrative : '')
         if (section === '') return null
@@ -905,10 +930,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       const input = newItems.slice(-14).map((i) => `#${i.seq} [${i.kind}] ${i.text}`).join('\n')
       const prompt = ['【本回合新內容】', input].join('\n')
       const raw = await callObsLlm(sessionId, OBS_SYSTEM, prompt)
-      if (raw === '') return
+      if (raw === '') {
+        console.error('[observation] 增量輸出為空(模型無輸出),session', sessionId)
+        return
+      }
       const parsed = parseChunkJson(raw)
       if (parsed === null) {
-        console.error('[observation] 增量輸出無法解析 JSON,session', sessionId, 'raw:', raw.slice(0, 200))
+        console.error('[observation] 增量輸出無法解析 JSON,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200))
         return
       }
       st.narrative = appendSection(st.narrative, parsed.section)
@@ -923,11 +951,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     // 重建觀測(手動/初始化):大段續寫,全過程覆蓋,交付物逐一點名。
     // v4-flash 有 1M 上下文:本 session 2577 條摘要(~38 萬字元)分 3 段即可;
     // 單段上限 1000 條摘要(~15 萬字元),遠低於模型上下文。
-    async function rebuildChronicle(sessionId: string, st: ObsState): Promise<void> {
+    // 回傳成功解析的段數;0 段 = 完全失敗,**不寫入**(見資料保護註釋)
+    async function rebuildChronicle(sessionId: string, st: ObsState): Promise<number> {
       const items = st.digest
-      if (items.length === 0) return
+      if (items.length === 0) return 0
       const CHUNK = 1000
       let pass = 0
+      let parsedCount = 0
       for (let i = 0; i < items.length; i += CHUNK) {
         pass += 1
         const chunk = items.slice(i, i + CHUNK)
@@ -938,20 +968,31 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           `【本段新內容(第 ${pass} 段,共 ${Math.ceil(items.length / CHUNK)} 段)】`, chunkText,
         ].join('\n')
         const raw = await callObsLlm(sessionId, OBS_SYSTEM_REBUILD, prompt)
-        if (raw === '') continue
-        const parsed = parseObsJson(raw)
-        if (parsed === null) {
-          console.error('[observation] 重建第 ' + pass + ' 段無法解析 JSON,session', sessionId, 'raw:', raw.slice(0, 200))
+        if (raw === '') {
+          console.error('[observation] 重建第 ' + pass + ' 段輸出為空,session', sessionId)
           continue
         }
+        const parsed = parseObsJson(raw)
+        if (parsed === null) {
+          console.error('[observation] 重建第 ' + pass + ' 段無法解析 JSON,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200))
+          continue
+        }
+        parsedCount += 1
         st.narrative = parsed.narrative
         if (parsed.topic !== '') st.topic = parsed.topic
         if (parsed.milestones.length > 0) st.milestones = mergeMilestones(sessionId, st, parsed.milestones)
         if (parsed.suggestedTodos.length > 0) st.suggestedTodos = parsed.suggestedTodos
       }
+      // 資料保護:全部段落失敗時不 persist、不動 turnCount——
+      // 空狀態覆寫掉好敘事的事故已發生過一次(2026-08-17,用戶回報)
+      if (parsedCount === 0) {
+        console.error('[observation] 重建全部段落失敗,保留原有敘事不覆寫,session', sessionId)
+        return 0
+      }
       st.turnCount += 1
       st.lastObservedIdx = st.digest.length
       await persistObs(sessionId, st)
+      return parsedCount
     }
 
     // 自動洞察(每 5 輪):基於觀測敘事與里程碑的價值導向評估
@@ -1127,15 +1168,21 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               sendJsonTo(res, 503, { error: 'sessionQuery 未就緒' })
               return
             }
-            let st = obsStates.get(sid) ?? initObs()
-            // 完全重置:清除舊敘事/里程碑/洞察(舊記錄可能已被其他 session 污染),全新重建
-            st = initObs()
+            // 在 scratch 狀態上重建,成功才替換 obsStates 並已 persist;
+            // 失敗則保留原有敘事(記憶體與儲存都不動)——不再先重置再冒覆寫風險。
+            // 注意:重建期間(約 1–2 分鐘)到達的即時事件仍在舊狀態上折疊,
+            // 替換後那一小段事件等下輪增量補上,可接受。
+            let st = initObs()
             st.digestCap = 3000 // 重建:全過程覆蓋,不丟早期成果
             st = await foldSessionDigest(sid, st)
+            const parsedCount = await rebuildChronicle(sid, st)
+            if (parsedCount === 0) {
+              sendJsonTo(res, 502, { error: '重建失敗:模型輸出全部無法解析,已保留原有敘事未覆寫。請稍後重試。' })
+              return
+            }
             obsStates.set(sid, st)
-            await rebuildChronicle(sid, st)
             await generateInsight(sid, st) // 重建後立即產生一次自動洞察
-            sendJsonTo(res, 200, { ok: true, turnCount: st.turnCount, narrative: st.narrative, topic: st.topic, insight: st.insight })
+            sendJsonTo(res, 200, { ok: true, parsedCount, turnCount: st.turnCount, narrative: st.narrative, topic: st.topic, insight: st.insight })
           } catch (e) {
             sendJsonTo(res, 500, { error: String(e && (e as Error).message ? (e as Error).message : e) })
           }

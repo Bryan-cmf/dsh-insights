@@ -45,6 +45,7 @@ interface ObsPayload {
 function ObsNarrative(props: { sessionId?: string; refreshKey: number }): ReactNode {
   const [obs, setObs] = useState<ObsPayload | null>(null)
   const [rebuilding, setRebuilding] = useState(false)
+  const [rebuildNote, setRebuildNote] = useState('')
   function load(): void {
     const sid = typeof props.sessionId === 'string' ? props.sessionId : ''
     if (sid === '') return
@@ -68,14 +69,23 @@ function ObsNarrative(props: { sessionId?: string; refreshKey: number }): ReactN
     const sid = typeof props.sessionId === 'string' ? props.sessionId : ''
     if (sid === '' || rebuilding) return
     setRebuilding(true)
+    setRebuildNote('')
     fetch('/api/observation/rebuild', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: sid }),
     })
       .then((r) => r.json())
-      .then(() => load())
-      .catch(() => { /* 靜默 */ })
+      .then((d: { ok?: boolean; error?: string }) => {
+        if (d && d.ok === true) {
+          setRebuildNote('')
+          load()
+        } else {
+          // 失敗也要看得見(原來靜默,用戶以為「沒有反應」)
+          setRebuildNote(d && typeof d.error === 'string' ? d.error : '重建失敗,請重試')
+        }
+      })
+      .catch(() => setRebuildNote('呼叫失敗——請檢查服務狀態後重試'))
       .finally(() => setRebuilding(false))
   }
 
@@ -83,13 +93,17 @@ function ObsNarrative(props: { sessionId?: string; refreshKey: number }): ReactN
     style: sendBtnSmall,
     onClick: rebuild,
     disabled: rebuilding,
-    title: '回讀全歷史,以成就主線重跑一次觀測(救回變薄的敘事)',
-  }, rebuilding ? '重建中…' : '重新觀測')
+    title: '回讀全歷史,以成就主線重跑一次觀測。需時約 1–2 分鐘,期間按鈕保持「重建中…」,完成後自動刷新',
+  }, rebuilding ? '重建中…(約 1–2 分鐘)' : '重新觀測')
+  const rebuildNoteEl = rebuildNote !== ''
+    ? createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-state-error-primary)' } }, rebuildNote)
+    : null
 
   if (obs === null || obs.empty === true) {
     return createElement('div', { style: card },
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         createElement('div', { style: { ...cardTitle, marginBottom: 0, flex: 1 } }, '觀測敘事'),
+        rebuildNoteEl,
         rebuildBtn),
       createElement('div', { style: emptyText }, '觀測智能體尚未產生敘事——有活動的回合結束後會自動觀測並在此沉澱滾動敘事與里程碑。'))
   }
@@ -103,6 +117,7 @@ function ObsNarrative(props: { sessionId?: string; refreshKey: number }): ReactN
   return createElement('div', { style: card },
     createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
       createElement('div', { style: { ...cardTitle, marginBottom: 0, flex: 1 } }, `觀測敘事${typeof obs.turnCount === 'number' ? `(觀測 ${obs.turnCount} 次)` : ''}`),
+      rebuildNoteEl,
       rebuildBtn),
     obs.topic !== undefined && obs.topic !== ''
       ? createElement('div', { style: { marginBottom: 6, color: 'var(--dsw-alias-brand-primary)', fontWeight: 600 } }, `主題:${obs.topic}`)
