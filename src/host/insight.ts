@@ -9,19 +9,7 @@
  * 收集 reasoning-delta(深思過程)與 text-delta(答案)一併回傳。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { z as zod } from 'zod'
-import { domainTable } from '@deepseek-ai/dsh-storage-domain'
-
-const obsSchema = zod.object({
-  sessionId: zod.string(),
-  narrative: zod.string(),
-  topic: zod.string(),
-  milestones: zod.array(zod.object({
-    seq: zod.number(), kind: zod.string(), title: zod.string(), why: zod.string(), evidenceSeq: zod.number(),
-  })),
-  turnCount: zod.number(),
-  updatedAt: zod.number(),
-})
+import { openObservationDomain } from './domains.ts'
 
 const SYSTEM = [
   '你是「洞察」——以技術服務價值的研發方向顧問,只讀當前 session 的觀測資料。',
@@ -175,8 +163,9 @@ export function applyInsightChat(ctx: InsightCtx): void {
     if (obsOpenFailed) return undefined
     try {
       if (obsTable === undefined) {
-        const d = await ctx.storageDomain.open({ name: 'observation', version: 1, tables: { sessions: domainTable(obsSchema) } })
-        obsTable = d.table('sessions')
+        // 插件級單例:與 perspectives 模組共用同一 observation 域(重複 open 會拋 DomainError)
+        const d = await openObservationDomain(ctx.storageDomain)
+        obsTable = d.table('sessions') as { get?: (id: string) => Promise<unknown> }
       }
       const getter = obsTable.get
       if (typeof getter !== 'function') return undefined

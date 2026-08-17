@@ -13,6 +13,7 @@
  */
 import { z as zod } from 'zod'
 import { domainTable } from '@deepseek-ai/dsh-storage-domain'
+import { openVectorMemoryDomain, openObservationDomain } from './domains.ts'
 
 interface FileCounter {
   reads: number
@@ -82,15 +83,7 @@ const scanSchema = zod.object({
   items: zod.array(insightItemSchema),
   saved: zod.array(insightItemSchema),
 })
-const memorySchema = zod.object({
-  id: zod.string(),
-  content: zod.string(),
-  tags: zod.array(zod.string()),
-  createdAt: zod.number(),
-  updatedAt: zod.number(),
-  hits: zod.number(),
-  expiresAt: zod.number(),
-})
+// memorySchema / obsSchema 已收攏到 ./domains.ts(插件級域單例,避免 DomainError)
 
 // ── 檔案活動 ─────────────────────────────────────────────────────────────────
 
@@ -450,20 +443,7 @@ const INSIGHT_AUTO_SYSTEM = [
   '繁體中文,簡潔。',
 ].join('\n')
 
-const obsSchema = zod.object({
-  sessionId: zod.string(),
-  narrative: zod.string(),
-  topic: zod.string(),
-  milestones: zod.array(zod.object({
-    seq: zod.number(), kind: zod.string(), title: zod.string(), why: zod.string(), evidenceSeq: zod.number(),
-  })),
-  suggestedTodos: zod.array(zod.object({ content: zod.string(), why: zod.string() })).optional(),
-  insight: zod.string().optional(),
-  turnCount: zod.number(),
-  updatedAt: zod.number(),
-})
-
-// ── 筆記/待辦域(每 session 一份,持久化)──────────────────────────────────────
+// ── 筆記/待辦域(每 session 一份,持久化;僅本模組使用,直接 open 不衝突)─────
 
 const notesSchema = zod.object({
   sessionId: zod.string(),
@@ -640,12 +620,9 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     if (table) return table
     if (openFailed) return undefined
     try {
-      const d = await domain!.open({
-        name: 'vector_memory',
-        version: 1,
-        tables: { memories: domainTable(memorySchema) },
-      })
-      table = d.table('memories')
+      // 插件級單例:與 memory 模組共用同一 vector_memory 域(重複 open 會拋 DomainError)
+      const d = await openVectorMemoryDomain(domain!)
+      table = d.table('memories') as TableLike
       return table
     } catch {
       openFailed = true
@@ -758,12 +735,9 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       if (obsOpenFailed) return undefined
       if (domain === undefined) return undefined
       try {
-        const d = await domain.open({
-          name: 'observation',
-          version: 1,
-          tables: { sessions: domainTable(obsSchema) },
-        })
-        obsTable = d.table('sessions')
+        // 插件級單例:與 insight 模組共用同一 observation 域
+        const d = await openObservationDomain(domain)
+        obsTable = d.table('sessions') as TableLike
         return obsTable
       } catch {
         obsOpenFailed = true

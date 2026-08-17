@@ -15,8 +15,8 @@
  */
 import { z as zod } from 'zod'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Context } from '@deepseek-ai/cordis'
+import { openVectorMemoryDomain } from './domains.ts'
 
 /** memory 模組的 config 切片(入口的合併 Config 結構上滿足此介面)。 */
 export interface MemoryConfig {
@@ -36,16 +36,6 @@ interface MemoryRecord {
   /** 0 = never expires. */
   expiresAt: number
 }
-
-const memorySchema = zod.object({
-  id: zod.string(),
-  content: zod.string(),
-  tags: zod.array(zod.string()),
-  createdAt: zod.number(),
-  updatedAt: zod.number(),
-  hits: zod.number(),
-  expiresAt: zod.number(),
-})
 
 interface MemoryHit {
   id: string
@@ -108,13 +98,10 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
   async function ensureTable(): Promise<TableLike> {
     if (table) return table
     try {
-      const domain = await obs.storageDomain.open({
-        name: 'vector_memory',
-        version: 1,
-        tables: { memories: domainTable(memorySchema) },
-      })
+      // 域 open 收攏為插件級單例(同 ctx 重複 open 同名域會拋 DomainError)
+      const domain = await openVectorMemoryDomain(obs.storageDomain)
       ctx.effect(() => () => { void domain.close() }, 'vector_memory.domain')
-      table = domain.table('memories')
+      table = domain.table('memories') as TableLike
       openError = ''
     } catch (error) {
       openError = String(error)
