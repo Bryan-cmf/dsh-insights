@@ -861,7 +861,9 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       return next
     }
 
-    async function callObsLlm(sessionId: string, system: string, prompt: string, maxTokens: number): Promise<string> {
+    // 不設 maxTokens:provider 缺省即不帶 max_tokens,讓模型自己決定輸出長度
+    // (用戶原則:大模型認為要輸出多少就輸出多少;坑 #2 的教訓是小額度→0 字,放開後由模型自治)
+    async function callObsLlm(sessionId: string, system: string, prompt: string): Promise<string> {
       let raw = ''
       try {
         for await (const chunk of llmRef.stream({
@@ -870,7 +872,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           reasoningEffort: 'high',
           system,
           messages: [{ id: 'obs-q-1', role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }],
-          maxTokens,
           temperature: 0.2,
         })) {
           if (chunk.type === 'text-delta' && typeof chunk.text === 'string') raw += chunk.text
@@ -903,7 +904,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       if (!meaningful) return
       const input = newItems.slice(-14).map((i) => `#${i.seq} [${i.kind}] ${i.text}`).join('\n')
       const prompt = ['【本回合新內容】', input].join('\n')
-      const raw = await callObsLlm(sessionId, OBS_SYSTEM, prompt, 1600)
+      const raw = await callObsLlm(sessionId, OBS_SYSTEM, prompt)
       if (raw === '') return
       const parsed = parseChunkJson(raw)
       if (parsed === null) {
@@ -936,7 +937,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           '【已有里程碑】', st.milestones.map((m) => `[${m.kind}]${m.title}`).join('; ') || '(無)',
           `【本段新內容(第 ${pass} 段,共 ${Math.ceil(items.length / CHUNK)} 段)】`, chunkText,
         ].join('\n')
-        const raw = await callObsLlm(sessionId, OBS_SYSTEM_REBUILD, prompt, 20000)
+        const raw = await callObsLlm(sessionId, OBS_SYSTEM_REBUILD, prompt)
         if (raw === '') continue
         const parsed = parseObsJson(raw)
         if (parsed === null) {
@@ -966,7 +967,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           reasoningEffort: 'high',
           system: INSIGHT_AUTO_SYSTEM,
           messages: [{ id: 'ins-auto-1', role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }],
-          maxTokens: 1200,
           temperature: 0.3,
         })) {
           if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
@@ -1332,7 +1332,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               reasoningEffort: 'high',
               system: OPT_SYSTEM,
               messages: [{ id: 'opt-q-1', role: 'user', content: [{ type: 'text', text: draft }], source: { kind: 'user' } }],
-              maxTokens: 2400,
               temperature: 0.2,
             })) {
               if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
@@ -1397,7 +1396,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
               reasoningEffort: 'high',
               system: SUMMARY_SYSTEM,
               messages: [{ id: 'sum-q-1', role: 'user', content: [{ type: 'text', text: obsText }], source: { kind: 'user' } }],
-              maxTokens: 2400,
               temperature: 0.3,
             })) {
               if (chunk.type === 'text-delta' && typeof chunk.text === 'string') summary += chunk.text

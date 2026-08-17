@@ -236,7 +236,6 @@ export function applyInsightChat(ctx: InsightCtx): void {
             reasoningEffort: 'max',
             system: SYSTEM + context + obsBlock + historyBlock,
             messages: [{ id: 'ins-q-1', role: 'user', content: [{ type: 'text', text: question }], source: { kind: 'user' } }],
-            maxTokens: 8000,
             temperature: 0.4,
           })) {
             if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
