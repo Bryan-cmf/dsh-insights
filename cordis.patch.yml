@@ -1,0 +1,9 @@
+# @bryan-cmf/dsh-insights — bundle patch layer.
+#
+# Inserted when this package is listed in a profile's `dsh.profile.bundles`.
+# NOTE: this row PUBLISHES the `vectorMemory` service — it must live in the
+# HOST composition (process-global) or inside an `isolate` group when used
+# from an agent preset.
+- insert:
+    - id: insights
+      name: '@bryan-cmf/dsh-insights'
