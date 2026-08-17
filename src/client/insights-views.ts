@@ -124,6 +124,8 @@ function InsightsView(props: ViewProps): ReactNode {
 
   const scanItems = scan && Array.isArray(scan.items) ? scan.items : []
   const savedKeys = new Set(scan && Array.isArray(scan.saved) ? scan.saved.map((s: any) => s.key) : [])
+  const policyBlocks = scan && typeof scan.policyBlocks === 'number' ? scan.policyBlocks : 0
+  const transientErrs = scan && typeof scan.transientErrs === 'number' ? scan.transientErrs : 0
   const scanReady = scan !== undefined
   const files = file && Array.isArray(file.files) ? file.files : []
   const mechItems = mech && Array.isArray(mech.items) ? mech.items : []
@@ -210,12 +212,14 @@ function InsightsView(props: ViewProps): ReactNode {
     createElement('div', { style: card },
       createElement('div', { style: cardTitle }, `掃描洞察(${scanItems.length})`),
       scanBody,
-      createElement('div', { style: { ...emptyText, marginTop: 8, fontSize: 11 } }, '軌跡自動掃描:工具失敗/重複失敗、用戶糾正、上下文壓縮、目標變更、無產出回合。重要性 ! 以上(≥2)的洞察會在回合結束時自動寫入記憶(標籤:洞察),可被 mem_search 檢索。')),
-    createElement('div', { style: card }, createElement('div', { style: cardTitle }, '風險掃描'), createElement('div', { style: statsRow },
+      createElement('div', { style: { ...emptyText, marginTop: 8, fontSize: 11 } }, '軌跡自動掃描:真錯誤按工具聚合去重(踩坑,進記憶)、用戶糾正、壓縮、目標變更、無產出回合。框架攔截(沙箱/審批,規則內保護)與瞬態錯誤(重啟/網絡)只計數不打擾。重要性 ! 以上(≥2)在回合結束自動寫入記憶(標籤:踩坑/洞察),可被 mem_search 檢索。')),
+    createElement('div', { style: card }, createElement('div', { style: cardTitle }, '風險與攔截'), createElement('div', { style: statsRow },
       createElement('div', { style: stat }, createElement('span', { style: { ...statValue, ...errColor } }, String((infra ? infra.errors : 0) + fileErr)), createElement('span', { style: statLabel }, '失敗')),
       createElement('div', { style: stat }, createElement('span', { style: statValue }, String(compactions)), createElement('span', { style: statLabel }, '壓縮')),
       createElement('div', { style: stat }, createElement('span', { style: statValue }, String(retries)), createElement('span', { style: statLabel }, 'LLM重試')),
-      createElement('div', { style: stat }, createElement('span', { style: statValue }, String(rejects)), createElement('span', { style: statLabel }, '審批拒絕')))))
+      createElement('div', { style: stat }, createElement('span', { style: statValue }, String(rejects)), createElement('span', { style: statLabel }, '審批拒絕')),
+      createElement('div', { style: stat, title: '沙箱/審批/政策攔截——規則內的有益保護,不是 bug' }, createElement('span', { style: statValue }, String(policyBlocks)), createElement('span', { style: statLabel }, '框架攔截(有益)')),
+      createElement('div', { style: stat, title: '重啟/網絡/限流類一次性錯誤' }, createElement('span', { style: statValue }, String(transientErrs)), createElement('span', { style: statLabel }, '瞬態錯誤')))))
 }
 
 // ── 提醒條(conversation.input.dock)────────────────────────────────────────────

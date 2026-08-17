@@ -44,11 +44,16 @@ interface ScanState {
   /** 已(將要)自動存入記憶的洞察——與存檔監聽器共用同一套規則,確定一致。 */
   saved: InsightItem[]
   pending: Record<string, string>
+  /** 真錯誤計數(按工具);政策/瞬態錯誤不計入、不升級。 */
   toolErrs: Record<string, number>
   seen: Record<string, boolean>
   compactionCount: number
   turnWrites: number
   turnsSinceWrite: number
+  /** 規則內攔截次數(沙箱/審批/政策)——只展示計數,不成洞察、不進記憶。 */
+  policyBlocks: number
+  /** 瞬態錯誤次數(重啟/網絡/限流)。 */
+  transientErrs: number
   seq: number
 }
 
@@ -82,6 +87,8 @@ const insightItemSchema = zod.object({
 const scanSchema = zod.object({
   items: zod.array(insightItemSchema),
   saved: zod.array(insightItemSchema),
+  policyBlocks: zod.number().optional(),
+  transientErrs: zod.number().optional(),
 })
 // memorySchema / obsSchema 已收攏到 ./domains.ts(插件級域單例,避免 DomainError)
 
@@ -215,7 +222,19 @@ function hashKey(s: string): string {
 }
 
 function initScan(): ScanState {
-  return { items: [], saved: [], pending: {}, toolErrs: {}, seen: {}, compactionCount: 0, turnWrites: 0, turnsSinceWrite: 0, seq: 0 }
+  return { items: [], saved: [], pending: {}, toolErrs: {}, seen: {}, compactionCount: 0, turnWrites: 0, turnsSinceWrite: 0, policyBlocks: 0, transientErrs: 0, seq: 0 }
+}
+
+// ── 錯誤分類(有益/有害)────────────────────────────────────────────────────
+// 用戶洞察:部分報錯是框架規則內的攔截(沙箱拒絕、審批要求、讀前編輯政策),
+// 是有益的保護;另一部分是重啟/網絡瞬態。兩者都不該變成洞察刷屏或進記憶。
+// 只有真錯誤(踩坑碰壁)才聚合成洞察並由存檔器寫入記憶(標籤:踩坑)。
+type ErrClass = 'policy' | 'transient' | 'real'
+function classifyError(code: string, msg: string): ErrClass {
+  const s = `${code} ${msg}`.toLowerCase()
+  if (/sandbox|file access denied|operation not permitted|eperm|eacces|requires reading|observation-policy|approval|審批/.test(s)) return 'policy'
+  if (/interrupted|no result was durably recorded|restart|kickstart|etimedout|econnreset|econnrefused|eai_again|rate.?limit|overloaded|socket/.test(s)) return 'transient'
+  return 'real'
 }
 
 function pushItem(state: ScanState, kind: InsightItem['kind'], text: string, importance: number, dedupeKey: string): ScanState {
@@ -258,9 +277,21 @@ function foldScan(state: ScanState, event: { type: string; data?: any }): ScanSt
     }
     if (ok) return next
     const code = String((d.error && typeof d.error === 'object' && d.error.code) || 'error')
+    const errMsg = String((d.error && typeof d.error === 'object' && d.error.message) || '')
+    const cls = classifyError(code, errMsg)
+    // 規則內攔截(有益):只計數——不成洞察、不進記憶、不觸發升級
+    if (cls === 'policy') return { ...next, policyBlocks: state.policyBlocks + 1 }
+    // 瞬態(重啟/網絡/限流):全 session 至多一條低重要性提示
+    if (cls === 'transient') {
+      const t = state.transientErrs + 1
+      next = { ...next, transientErrs: t }
+      if (t === 1) next = pushItem(next, 'signal', `出現瞬態錯誤(重啟/網絡類,${tool})——通常無需處理,持續出現才排查`, 1, 'transient:first')
+      return next
+    }
+    // 真錯誤(踩坑):按工具聚合去重——每工具一行 + 第 2/5 次升級行
     const errs = (state.toolErrs[tool] || 0) + 1
     next = { ...next, toolErrs: { ...state.toolErrs, [tool]: errs } }
-    next = pushItem(next, 'risk', `工具「${tool}」失敗(${code})`, 2, `fail:${tool}:${code}`)
+    next = pushItem(next, 'risk', `工具「${tool}」失敗(${code})——踩坑,需排查`, 2, `fail:${tool}`)
     if (errs === 2) next = pushItem(next, 'risk', `工具「${tool}」已失敗 ${errs} 次——優先排查其輸入與環境`, 3, `failx2:${tool}`)
     if (errs === 5) next = pushItem(next, 'risk', `工具「${tool}」已失敗 ${errs} 次——建議暫停並人工介入`, 3, `failx5:${tool}`)
     return next
@@ -402,6 +433,7 @@ const OBS_SHARED = [
   '你只輸出 JSON,不輸出其他任何文字。',
   '敘事主線是「進步與成果」:完成了什麼、交付了什麼、往前推進了什麼、學到了什麼。',
   '工具失敗與除錯細節不是敘事重點(觀測頁另有錯誤與統計區塊)——只在其實際影響成果時一句帶過。',
+  '框架攔截類錯誤(沙箱拒絕、審批要求、讀前編輯政策等)與重啟/網絡瞬態錯誤是規則內的正常保護,不是卡點——一律不寫進敘事、里程碑或建議。',
   '事件([cmd]/[write] 等)是成果的證據,不是敘事主體。',
   'JSON 格式:',
   '{',
@@ -433,14 +465,15 @@ const OBS_SYSTEM_REBUILD = OBS_SHARED + '\n' + [
   'narrative 欄位回傳「完整的更新後編年史全文」;milestones 與已有里程碑去重(同 kind+title 不重複加入)。',
 ].join('\n')
 
-// 自動洞察(每 5 輪):價值導向評估
+// 自動洞察(每 5 輪):價值/方向/潛力發現——錯誤與踩坑由記憶承載,這裡只談價值。
 const INSIGHT_AUTO_SYSTEM = [
-  '你是「洞察」——每 5 輪對一個研發 session 做一次自動價值評估。',
+  '你是「洞察」——每 5 輪對一個研發 session 做一次價值與方向評估。',
   '根據提供的觀測敘事與里程碑,直接輸出 150–250 字(不要 JSON、不要標題):',
-  '1. 這幾輪的淨進展:往前推進了什麼(成果導向,不列錯誤細節)',
-  '2. 與價值目標的對齊度:有沒有偏離',
-  '3. 下一個最有價值的動作:一句話',
-  '繁體中文,簡潔。',
+  '1. 價值發現:這幾輪產生了什麼有價值的東西(成果/能力/可複用資產)',
+  '2. 方向發現:方向在收斂還是發散;有沒有更值得的路線',
+  '3. 潛力路徑:基於已有成果,項目還有哪些有價值的展開方向或選項(至多兩條)',
+  '4. 下一個最有價值的動作:一句話',
+  '規則:不列錯誤清單、不提除錯細節——錯誤與踩坑已由記憶承載;這裡只談價值、方向與潛力。繁體中文,簡潔。',
 ].join('\n')
 
 // ── 筆記/待辦域(每 session 一份,持久化;僅本模組使用,直接 open 不衝突)─────
@@ -607,7 +640,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
   ctx.sessionProjections.register({
     key: 'insightsScan', schema: scanSchema,
     init: initScan, apply: foldScan,
-    view: (s: ScanState) => ({ items: s.items, saved: s.saved }), stateVersion: 1,
+    view: (s: ScanState) => ({ items: s.items, saved: s.saved, policyBlocks: s.policyBlocks, transientErrs: s.transientErrs }), stateVersion: 2,
   })
 
   // ── 洞察自動存檔 ──
@@ -631,16 +664,19 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
   }
 
   // 記憶 row key 加 session 前綴:避免跨 session 同名 key(如 llmretry、
-  // fail:read:ENOENT)互相覆寫。舊格式無前綴的歷史 row 仍在(90 天過期),不遷移。
+  // fail:read)互相覆寫。舊格式無前綴的歷史 row 仍在(90 天過期),不遷移。
+  // 真錯誤類洞察(fail*)以「踩坑」標籤入記憶——犯錯踩坑由記憶承載;
+  // 政策/瞬態錯誤在 foldScan 已被攔截,永遠到不了這裡。
   async function saveInsight(sid: string, item: InsightItem): Promise<boolean> {
     try {
       const t = await ensureTable()
       if (!t) return false
       const now = Date.now()
+      const isPitfall = item.key.startsWith('fail')
       await t.put(`${sid}:${item.key}`, {
         id: nextSaveId(),
-        content: `[洞察] ${item.text}`,
-        tags: ['洞察', item.kind],
+        content: `${isPitfall ? '[踩坑]' : '[洞察]'} ${item.text}`,
+        tags: [isPitfall ? '踩坑' : '洞察', item.kind],
         createdAt: now,
         updatedAt: now,
         hits: 0,
