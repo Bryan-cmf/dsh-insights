@@ -31,6 +31,8 @@ export const memorySchema = zod.object({
   updatedAt: zod.number(),
   hits: zod.number(),
   expiresAt: zod.number(),
+  /** v0.10.0:寫入方 session id(記憶頁嚴格隔離;舊記錄無此欄位仍相容)。 */
+  sid: zod.string().optional(),
 })
 
 /** observation 域 schema(perspectives 超集版;suggestedTodos/insight/summary/paths 可選,與 insight 模組的子集讀取相容)。 */
