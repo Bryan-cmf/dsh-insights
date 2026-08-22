@@ -9,7 +9,7 @@
  * 收集 reasoning-delta(深思過程)與 text-delta(答案)一併回傳。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { openObservationDomain } from './domains.ts'
+import { openObservationDomain, openInsightChatDomain } from './domains.ts'
 
 const SYSTEM = [
   '你是「洞察」——全面服務於價值、潛力路徑與發展方向的研發顧問,只讀當前 session 的觀測資料。',
@@ -180,21 +180,103 @@ export function applyInsightChat(ctx: InsightCtx): void {
     }
   }
 
+  // ── 對話歷史持久化(insight_chat 域,per-session 對話線,滾動 50 條)─────
+  // 用戶需求:洞察對話有獨立 session 及對話歷史,刷新/重啟後模型仍能回顧。
+  interface ChatMsg { role: string; text: string; thinking?: string; at: number }
+  interface ChatTable { get?: (id: string) => Promise<unknown>; put(id: string, record: unknown): Promise<unknown> }
+  let chatTable: ChatTable | undefined
+  let chatOpenFailed = false
+  async function ensureChatTable(): Promise<ChatTable | undefined> {
+    if (chatTable) return chatTable
+    if (chatOpenFailed) return undefined
+    if (ctx.storageDomain === undefined) return undefined
+    try {
+      const d = await openInsightChatDomain(ctx.storageDomain)
+      chatTable = d.table('chats') as ChatTable
+      return chatTable
+    } catch {
+      chatOpenFailed = true
+      return undefined
+    }
+  }
+  async function readChat(sessionId: string): Promise<ChatMsg[]> {
+    try {
+      const t = await ensureChatTable()
+      const getter = t && t.get
+      if (typeof getter !== 'function') return []
+      const stored = await getter.call(t, sessionId)
+      if (stored && typeof stored === 'object') {
+        const msgs = (stored as { messages?: unknown }).messages
+        if (Array.isArray(msgs)) return msgs as ChatMsg[]
+      }
+      return []
+    } catch {
+      return []
+    }
+  }
+  async function appendChat(sessionId: string, msgs: ChatMsg[]): Promise<void> {
+    try {
+      const t = await ensureChatTable()
+      if (!t) return
+      const existing = await readChat(sessionId)
+      const merged = [...existing, ...msgs].slice(-50)
+      await t.put(sessionId, { sessionId, messages: merged, updatedAt: Date.now() })
+    } catch {
+      // 靜默:歷史寫入失敗不影響回答
+    }
+  }
+  async function clearChat(sessionId: string): Promise<void> {
+    try {
+      const t = await ensureChatTable()
+      if (!t) return
+      await t.put(sessionId, { sessionId, messages: [], updatedAt: Date.now() })
+    } catch {
+      // 靜默
+    }
+  }
+  function historyBlockOf(msgs: ChatMsg[]): string {
+    const lines: string[] = []
+    for (const m of msgs.slice(-10)) {
+      const role = m.role === 'assistant' ? '洞察' : '用戶'
+      const t = typeof m.text === 'string' ? m.text.slice(0, 800) : ''
+      if (t !== '') lines.push(`${role}:${t}`)
+    }
+    return lines.length > 0 ? '\n\n【近期對話】\n' + lines.join('\n') : ''
+  }
+
   ctx.webServer.register({
     kind: 'exact',
     path: '/api/insight/chat',
     handler: async (req, res) => {
       try {
+        // GET:取回該 session 的持久對話歷史(浮窗掛載時還原)
+        if (req.method === 'GET') {
+          const url = new URL(String(req.url || ''), 'http://localhost')
+          const sid = url.searchParams.get('sessionId') || ''
+          if (sid === '') {
+            sendJson(res, 400, { error: 'missing sessionId' })
+            return
+          }
+          sendJson(res, 200, { messages: await readChat(sid) })
+          return
+        }
         if (req.method !== 'POST') {
           sendJson(res, 405, { error: 'method not allowed' })
           return
         }
         const raw = await readBody(req)
-        let args: { context?: unknown; question?: unknown; sessionId?: unknown; history?: unknown } = {}
+        let args: { context?: unknown; question?: unknown; sessionId?: unknown; history?: unknown; action?: unknown } = {}
         try {
           args = JSON.parse(raw || '{}') as typeof args
         } catch {
           sendJson(res, 400, { error: 'invalid JSON' })
+          return
+        }
+        const sid = typeof args.sessionId === 'string' ? args.sessionId : ''
+        // action=clear:清空該 session 的對話線
+        if (args.action === 'clear') {
+          if (sid !== '') await clearChat(sid)
+          sendJson(res, 200, { ok: true })
           return
         }
         const question = typeof args.question === 'string' ? args.question.slice(0, 800) : ''
@@ -203,23 +285,25 @@ export function applyInsightChat(ctx: InsightCtx): void {
           return
         }
         const context = typeof args.context === 'string' ? args.context.slice(0, 3000) : ''
-        // 近期對話歷史:讓洞察智能體看得見前文,對話才自然(原來只收單題)
+        // 對話歷史:優先取持久化的對話線(跨刷新/重啟仍在);存儲為空時退回 client 上報
         let historyBlock = ''
-        if (Array.isArray(args.history)) {
-          const lines: string[] = []
+        if (sid !== '') {
+          const stored = await readChat(sid)
+          if (stored.length > 0) historyBlock = historyBlockOf(stored)
+        }
+        if (historyBlock === '' && Array.isArray(args.history)) {
+          const fallback: ChatMsg[] = []
           for (const h of args.history.slice(-10)) {
             if (h && typeof h === 'object') {
               const o = h as Record<string, unknown>
-              const role = o.role === 'assistant' ? '洞察' : '用戶'
-              const t = typeof o.text === 'string' ? o.text.slice(0, 800) : ''
-              if (t !== '') lines.push(`${role}:${t}`)
+              if (typeof o.text === 'string' && o.text !== '') fallback.push({ role: o.role === 'assistant' ? 'assistant' : 'user', text: o.text.slice(0, 800), at: 0 })
             }
           }
-          if (lines.length > 0) historyBlock = '\n\n【近期對話】\n' + lines.join('\n')
+          historyBlock = historyBlockOf(fallback)
         }
         let obsBlock = ''
-        if (typeof args.sessionId === 'string' && args.sessionId !== '') {
-          const obs = await readObservation(args.sessionId)
+        if (sid !== '') {
+          const obs = await readObservation(sid)
           if (obs !== undefined) obsBlock = obsContextBlock(obs)
         }
         const granted = await acquire()
@@ -249,6 +333,14 @@ export function applyInsightChat(ctx: InsightCtx): void {
         if (!finished && text === '') {
           sendJson(res, 502, { error: '模型串流中斷且無輸出' })
           return
+        }
+        // 成功回答後寫入對話歷史(per-session 滾動 50 條;思考過程一併存,便於回顧)
+        if (sid !== '') {
+          const now = Date.now()
+          await appendChat(sid, [
+            { role: 'user', text: question, at: now },
+            { role: 'assistant', text: text.slice(0, 4000), thinking: thinking.slice(0, 2000), at: now },
+          ])
         }
         sendJson(res, 200, { answer: text, thinking: thinking.slice(0, 8000) })
       } catch (e) {

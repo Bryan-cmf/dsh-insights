@@ -37,6 +37,8 @@ const bridge: {
   sessionId: string | undefined
 } = { goal: undefined, todos: undefined, scan: undefined, file: undefined, mech: undefined, inputActions: undefined, sessionId: undefined }
 const uiState = { expanded: false }
+/** 已從 host 還原過歷史的 session(避免重複 fetch) */
+const loadedSids: Record<string, boolean> = {}
 
 function stateOf(sid: string | undefined) {
   const key = typeof sid === 'string' && sid !== '' ? sid : '_default'
@@ -154,6 +156,35 @@ function FloatingInsightChat(): ReactNode {
   const sid = bridge.sessionId
   const st = stateOf(sid)
 
+  // 對話歷史還原(host 持久化,跨刷新/重啟):本地為空才載入,每個 session 一次
+  useEffect(() => {
+    if (typeof sid !== 'string' || sid === '') return
+    if (st.messages.length > 0 || loadedSids[sid] === true) return
+    loadedSids[sid] = true
+    fetch(`/api/insight/chat?sessionId=${encodeURIComponent(sid)}`)
+      .then((r) => r.json())
+      .then((d: { messages?: Array<{ role: string; text: string; thinking?: string }> }) => {
+        if (Array.isArray(d.messages) && d.messages.length > 0 && st.messages.length === 0) {
+          for (const m of d.messages) {
+            if (typeof m.text === 'string') st.messages.push({ role: m.role, text: m.text, thinking: typeof m.thinking === 'string' ? m.thinking : '' })
+          }
+          force()
+        }
+      })
+      .catch(() => { /* 靜默 */ })
+  }, [sid])
+
+  function clearHistory(): void {
+    if (typeof sid !== 'string' || sid === '') return
+    fetch('/api/insight/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, action: 'clear' }),
+    }).catch(() => { /* 靜默 */ })
+    st.messages.splice(0, st.messages.length)
+    force()
+  }
+
   function send(): void {
     const el = inputRef.current
     const q = el && el.value ? el.value.trim() : ''
@@ -221,6 +252,9 @@ function FloatingInsightChat(): ReactNode {
     createElement('div', { style: panelHead },
       createElement('span', null, '洞察對話'),
       createElement('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' } }, '方向評估 · V4 flash 深思'),
+      st.messages.length > 0
+        ? createElement('span', { style: headBtn, title: '清空本 session 對話歷史(含持久存儲)', onClick: clearHistory }, '🗑')
+        : null,
       createElement('span', { style: headBtn, title: '收合', onClick: () => { uiState.expanded = false; force() } }, '✕')),
     createElement('div', { style: panelBody, ref: bodyRef },
       noSession
