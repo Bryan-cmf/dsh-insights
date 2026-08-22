@@ -4,7 +4,7 @@
 
 🌐 <a href="./README.md">English</a> · **繁體中文**
 
-DeepSeek Harness 的價值導向觀測/洞察/記憶管線 — DSH 四合一套件,持續迭代中。
+DeepSeek Harness 的價值導向觀測/洞察/記憶管線 — DSH 單一套件,持續迭代中。
 
 [![npm version](https://img.shields.io/npm/v/@bryan-cmf/dsh-insights)](https://www.npmjs.com/package/@bryan-cmf/dsh-insights)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -81,7 +81,7 @@ node scripts/smoke-host.mjs   # host 結構冒煙:9 路由/6 投影/6 工具/1 �
 | v0.4.x | 方向演變時間線;潛力路徑生成器;字串感知 JSON 平衡擷取 |
 | v0.3.x | 價值導向布局;對話歷史補全;全面移除 maxTokens 上限 |
 | v0.2.0 | 錯誤三分類(policy / transient / real);洞察頁轉向價值/方向 |
-| v0.1.0 | 四套件合併為單一插件發布;儲存域單例修復 |
+| v0.1.0 | 首個統一單一插件發布;儲存域單例修復 |
 
 ## License
 

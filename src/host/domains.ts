@@ -1,8 +1,7 @@
 /**
  * dsh-insights · 共用儲存域 opener。
  *
- * 合併前的四套件各自 inject storageDomain,同名域各自 open 互不衝突;
- * 合併成單一插件後,同一 ctx 上重複 open 同名域會拋
+ * 同一 ctx 上重複 open 同名域會拋
  * `DomainError: domain '<name>' is already open`(重啟後實測命中:
  * memory 與 perspectives 同開 vector_memory;perspectives 與 insight
  * 同開 observation)。此模組把域 open 收攏為插件級單例。

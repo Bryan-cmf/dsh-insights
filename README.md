@@ -4,7 +4,7 @@
 
 🌐 **English** · <a href="./README.zh.md">繁體中文</a>
 
-A value-oriented observation / insight / memory pipeline for DeepSeek Harness — a four-in-one plugin, actively iterated.
+A value-oriented observation / insight / memory pipeline for DeepSeek Harness — a single plugin, actively iterated.
 
 [![npm version](https://img.shields.io/npm/v/@bryan-cmf/dsh-insights)](https://www.npmjs.com/package/@bryan-cmf/dsh-insights)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -80,7 +80,7 @@ Source layout: host entry `src/index.ts` (merged Config + union of injects); fea
 | v0.4.x | Direction-evolution timeline; potential-paths generator; brace-aware JSON extraction |
 | v0.3.x | Value-focused layouts; coherent chat history; all `maxTokens` caps removed |
 | v0.2.0 | Error taxonomy (policy / transient / real); insights repositioned to value / direction |
-| v0.1.0 | Four packages merged into one bundle; published; storage-domain singleton fix |
+| v0.1.0 | First unified single-bundle release; published; storage-domain singleton fix |
 
 ## License
 

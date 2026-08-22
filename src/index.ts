@@ -1,11 +1,8 @@
 /**
  * @bryan-cmf/dsh-insights — Host half(永久化)。
  *
- * 觀測 → 記憶 → 洞察 → 筆記:價值導向的研發觀測/洞察管線,四合一套件。
- * (原 dsh-infra-observability / dsh-vector-memory / dsh-view-perspectives /
- * dsh-insight-agent 四套件合併;各功能在 host/ 下以模組保留。)
- *
- * 模組:
+ * 觀測 → 記憶 → 洞察 → 筆記:價值導向的研發觀測/洞察管線,單一套件。
+ * 功能在 host/ 下以模組組織:
  * - infra        :結構觀測層(tools/result 記錄、agent 生命週期、watchdog、
  *                  infraView 投影、usage_report / audit_skills / infra_health 工具)
  * - memory       :持久記憶核心(vector_memory 域、mem_save / mem_search /

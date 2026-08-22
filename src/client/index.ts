@@ -1,7 +1,7 @@
 /**
  * @bryan-cmf/dsh-insights — Client half(永久化)。
  *
- * 四合一套件的瀏覽器半邊(原四套件的 client 各成一模組):
+ * 單一套件的瀏覽器半邊,視圖模組:
  * - observation-view :「觀測」tab(order 20)——概覽統計 + 觀測敘事/里程碑 +
  *                      全項目一覽 + 檔案活動 + 機制事件 + 最近執行
  * - memory-view      :「記憶」tab(order 30)——四透鏡(卡點/失敗/技術/學習),失敗高亮
