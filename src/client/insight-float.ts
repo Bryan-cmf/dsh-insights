@@ -36,7 +36,33 @@ const bridge: {
   inputActions: ViewProps['inputActions']
   sessionId: string | undefined
 } = { goal: undefined, todos: undefined, scan: undefined, file: undefined, mech: undefined, inputActions: undefined, sessionId: undefined }
-const uiState = { expanded: false }
+// FAB 位置:可拖動,localStorage 持久(刷新/重啟後保持)
+const FAB_KEY = 'dsh-insights-fab-pos'
+const FAB_SIZE = 52
+const PANEL_W = 380
+const PANEL_H = 480
+
+function loadFabPos(): { left: number; top: number } | null {
+  try {
+    const raw = window.localStorage.getItem(FAB_KEY)
+    if (raw !== null) {
+      const p = JSON.parse(raw) as { left?: unknown; top?: unknown }
+      if (typeof p.left === 'number' && typeof p.top === 'number') return { left: p.left, top: p.top }
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+function saveFabPos(p: { left: number; top: number }): void {
+  try {
+    window.localStorage.setItem(FAB_KEY, JSON.stringify(p))
+  } catch {
+    // ignore
+  }
+}
+
+const uiState = { expanded: false, fabPos: loadFabPos() }
 /** 已從 host 還原過歷史的 session(避免重複 fetch) */
 const loadedSids: Record<string, boolean> = {}
 
@@ -65,6 +91,25 @@ const panel: CSSProperties = {
   background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)',
   borderRadius: 12, boxShadow: 'var(--dsw-shadow-lv2, 0 8px 32px rgba(0,0,0,.3))',
   display: 'flex', flexDirection: 'column', overflow: 'hidden', pointerEvents: 'auto',
+}
+
+// 動態位置:FAB 拖到哪面板跟到哪(仍在視口內)
+function fabStyle(): CSSProperties {
+  if (uiState.fabPos === null) return fab
+  const left = Math.min(Math.max(0, uiState.fabPos.left), window.innerWidth - FAB_SIZE - 4)
+  const top = Math.min(Math.max(0, uiState.fabPos.top), window.innerHeight - FAB_SIZE - 4)
+  return { ...fab, right: 'auto', bottom: 'auto', left, top }
+}
+function panelStyle(): CSSProperties {
+  if (uiState.fabPos === null) return panel
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const left = Math.min(Math.max(8, uiState.fabPos.left + FAB_SIZE / 2 - PANEL_W / 2), Math.max(8, vw - PANEL_W - 8))
+  // FAB 在螢幕上半 → 面板往下開;下半 → 往上開
+  const below = uiState.fabPos.top < vh / 2
+  let top = below ? uiState.fabPos.top + FAB_SIZE + 8 : uiState.fabPos.top - PANEL_H - 8
+  top = Math.min(Math.max(8, top), Math.max(8, vh - PANEL_H - 8))
+  return { ...panel, right: 'auto', bottom: 'auto', left, top }
 }
 const panelHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', flex: 'none' }
 const headBtn: CSSProperties = { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', padding: '0 4px', userSelect: 'none', fontSize: 14, flex: 'none' }
@@ -185,6 +230,41 @@ function FloatingInsightChat(): ReactNode {
     force()
   }
 
+  // 可拖動 FAB/面板頭:拖動改變錨點(存 localStorage);原地放開 = 點擊(展開面板)
+  function startDrag(e: { target: unknown; currentTarget: unknown; clientX: number; clientY: number; preventDefault: () => void }): void {
+    const t = e.target as { closest?: (sel: string) => unknown } | null
+    if (t && typeof t.closest === 'function' && t.closest('[data-nodrag]') !== null) return
+    e.preventDefault()
+    const el = e.currentTarget as HTMLElement
+    const rect = el.getBoundingClientRect()
+    const startX = e.clientX
+    const startY = e.clientY
+    let moved = false
+    const onMove = (ev: { clientX: number; clientY: number }): void => {
+      const dx = ev.clientX - startX
+      const dy = ev.clientY - startY
+      if (!moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return // 拖動閾值內 = 點擊
+      moved = true
+      uiState.fabPos = {
+        left: Math.min(Math.max(0, rect.left + dx), window.innerWidth - FAB_SIZE - 4),
+        top: Math.min(Math.max(0, rect.top + dy), window.innerHeight - FAB_SIZE - 4),
+      }
+      force()
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (moved) {
+        if (uiState.fabPos !== null) saveFabPos(uiState.fabPos)
+      } else {
+        uiState.expanded = true
+        force()
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   function send(): void {
     const el = inputRef.current
     const q = el && el.value ? el.value.trim() : ''
@@ -222,9 +302,9 @@ function FloatingInsightChat(): ReactNode {
 
   if (!uiState.expanded) {
     return createElement('div', {
-      style: fab,
-      title: '洞察智能體——點擊開啟對話',
-      onClick: () => { uiState.expanded = true; force() },
+      style: { ...fabStyle(), cursor: 'grab' },
+      title: '洞察智能體——拖動到任意位置;點擊開啟對話',
+      onMouseDown: startDrag,
     },
       createElement('span', null, '洞察'))
   }
@@ -248,14 +328,14 @@ function FloatingInsightChat(): ReactNode {
 
   const noSession = bridge.scan === undefined && bridge.inputActions === undefined
 
-  return createElement('div', { style: panel },
-    createElement('div', { style: panelHead },
+  return createElement('div', { style: panelStyle() },
+    createElement('div', { style: { ...panelHead, cursor: 'grab' }, onMouseDown: startDrag, title: '拖動面板移動位置' },
       createElement('span', null, '洞察對話'),
       createElement('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' } }, '方向評估 · V4 flash 深思'),
       st.messages.length > 0
-        ? createElement('span', { style: headBtn, title: '清空本 session 對話歷史(含持久存儲)', onClick: clearHistory }, '🗑')
+        ? createElement('span', { style: headBtn, title: '清空本 session 對話歷史(含持久存儲)', onClick: clearHistory, 'data-nodrag': '1' }, '🗑')
         : null,
-      createElement('span', { style: headBtn, title: '收合', onClick: () => { uiState.expanded = false; force() } }, '✕')),
+      createElement('span', { style: headBtn, title: '收合', onClick: () => { uiState.expanded = false; force() }, 'data-nodrag': '1' }, '✕')),
     createElement('div', { style: panelBody, ref: bodyRef },
       noSession
         ? createElement('div', { style: emptyText }, '請先開啟一個 session,洞察智能體需要讀取該 session 的觀測資料。')
