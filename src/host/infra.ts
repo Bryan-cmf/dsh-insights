@@ -122,9 +122,20 @@ interface InfraState {
   recent: Array<{ seq: number; name: string; ok: boolean; code: string }>
 }
 
-/** Projection schema — must be zod: session-projection settles values with
- * schema.parse(); schemastery objects (used for Config above) have no .parse. */
-const infraSchema = zod.object({
+/** 內部折疊狀態 schema(restore 種子用)——必須覆蓋 InfraState 全部欄位(含 pending)。 */
+const counterSchema = zod.object({ calls: zod.number(), ok: zod.number(), err: zod.number() })
+const infraStateSchema = zod.object({
+  started: zod.number(),
+  ended: zod.number(),
+  errors: zod.number(),
+  pending: zod.record(zod.string(), zod.object({ name: zod.string(), skill: zod.string() })),
+  tools: zod.record(zod.string(), counterSchema),
+  skills: zod.record(zod.string(), counterSchema),
+  recent: zod.array(zod.object({ seq: zod.number(), name: zod.string(), ok: zod.boolean(), code: zod.string() })),
+})
+
+/** 客戶端 wire 值 schema(snapshot 輸出前解析)。 */
+const infraWireSchema = zod.object({
   turns: zod.object({ started: zod.number(), ended: zod.number() }),
   errors: zod.number(),
   tools: zod.array(zod.object({ name: zod.string(), calls: zod.number(), ok: zod.number(), err: zod.number() })),
@@ -228,10 +239,10 @@ export function applyInfra(ctx: Context, config: InfraConfig): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     ;(projectionCtx as unknown as { sessionProjections: { register(d: unknown): unknown } }).sessionProjections.register({
       key: 'infraView',
-      schema: infraSchema,
+      stateSchema: infraStateSchema,
       init: () => ({ started: 0, ended: 0, errors: 0, pending: {}, tools: {}, skills: {}, recent: [] }),
       apply: (state: InfraState, event: SessionEventShape) => foldInfra(state, event),
-      view: viewInfra,
+      wire: { viewSchema: infraWireSchema, view: viewInfra },
       stateVersion: 1,
     })
   })

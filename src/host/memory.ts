@@ -145,11 +145,13 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
 
   // ── memActivity projection (session's memory activity for the view tab) ───
   ctx.inject(['sessionProjections'], (projectionCtx) => {
+    const activityItemSchema = zod.object({ seq: zod.number(), kind: zod.string(), text: zod.string(), ok: zod.boolean() })
     ;(projectionCtx as unknown as { sessionProjections: { register(d: unknown): unknown } }).sessionProjections.register({
       key: 'memActivity',
       /** Projection schemas must be zod (schemastery objects have no .parse). */
-      schema: zod.object({
-        items: zod.array(zod.object({ seq: zod.number(), kind: zod.string(), text: zod.string(), ok: zod.boolean() })),
+      stateSchema: zod.object({
+        items: zod.array(activityItemSchema),
+        pending: zod.record(zod.string(), zod.object({ kind: zod.string(), text: zod.string() })),
       }),
       init: () => ({ items: [], pending: {} }),
       apply: (state: { items: Array<{ seq: number; kind: string; text: string; ok: boolean }>; pending: Record<string, { kind: string; text: string }> }, event: { type: string; seq?: number; data?: unknown }) => {
@@ -186,7 +188,7 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
         }
         return state
       },
-      view: (state: { items: Array<{ seq: number; kind: string; text: string; ok: boolean }> }) => ({ items: state.items }),
+      wire: { viewSchema: zod.object({ items: zod.array(activityItemSchema) }), view: (state: { items: Array<{ seq: number; kind: string; text: string; ok: boolean }> }) => ({ items: state.items }) },
       stateVersion: 1,
     })
   })

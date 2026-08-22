@@ -67,6 +67,30 @@ const MECH_TYPES = [
 ]
 
 // ── schemas ──────────────────────────────────────────────────────────────────
+// 注意:session-projection 現行契約(0.1.1-rc.2)讀 `stateSchema` + `wire.viewSchema/view`;
+// 舊的 `schema`/`view` 頂層欄位會被忽略(單元註冊為 host-only,客戶端永遠收不到)。
+
+const fileCounterSchema = zod.object({
+  reads: zod.number(), writes: zod.number(), edits: zod.number(),
+  searches: zod.number(), err: zod.number(), lastOk: zod.boolean(), lastTool: zod.string(),
+})
+const fileStateSchema = zod.object({
+  files: zod.record(zod.string(), fileCounterSchema),
+  pending: zod.record(zod.string(), zod.object({ name: zod.string(), path: zod.string() })),
+  recent: zod.array(zod.object({ seq: zod.number(), path: zod.string(), tool: zod.string(), ok: zod.boolean(), code: zod.string() })),
+  seq: zod.number(),
+})
+const mechStateSchema = zod.object({
+  items: zod.array(zod.object({ seq: zod.number(), type: zod.string(), text: zod.string() })),
+  seq: zod.number(),
+})
+const goalStateSchema = zod.object({
+  items: zod.array(zod.object({ seq: zod.number(), action: zod.string(), objective: zod.string() })),
+  seq: zod.number(),
+})
+const insightItemSchema = zod.object({
+  seq: zod.number(), kind: zod.string(), text: zod.string(), importance: zod.number(), key: zod.string(),
+})
 
 const fileSchema = zod.object({
   files: zod.array(zod.object({
@@ -81,14 +105,24 @@ const mechSchema = zod.object({
 const goalSchema = zod.object({
   items: zod.array(zod.object({ seq: zod.number(), action: zod.string(), objective: zod.string() })),
 })
-const insightItemSchema = zod.object({
-  seq: zod.number(), kind: zod.string(), text: zod.string(), importance: zod.number(), key: zod.string(),
-})
 const scanSchema = zod.object({
   items: zod.array(insightItemSchema),
   saved: zod.array(insightItemSchema),
   policyBlocks: zod.number().optional(),
   transientErrs: zod.number().optional(),
+})
+const scanStateSchema = zod.object({
+  items: zod.array(insightItemSchema),
+  saved: zod.array(insightItemSchema),
+  pending: zod.record(zod.string(), zod.string()),
+  toolErrs: zod.record(zod.string(), zod.number()),
+  seen: zod.record(zod.string(), zod.boolean()),
+  compactionCount: zod.number(),
+  turnWrites: zod.number(),
+  turnsSinceWrite: zod.number(),
+  policyBlocks: zod.number(),
+  transientErrs: zod.number(),
+  seq: zod.number(),
 })
 // memorySchema / obsSchema 已收攏到 ./domains.ts(插件級域單例,避免 DomainError)
 
@@ -381,10 +415,10 @@ export interface ProjectionCtx {
   sessionProjections: {
     register(d: {
       key: string
-      schema: { parse: (v: unknown) => unknown }
+      stateSchema: { parse: (v: unknown) => unknown }
       init: () => unknown
       apply: (state: any, event: any) => unknown
-      view: (state: any) => unknown
+      wire: { viewSchema: { parse: (v: unknown) => unknown }; view: (state: any) => unknown }
       stateVersion: number
     }): () => void
   }
@@ -699,24 +733,24 @@ function parseObsJson(raw: string): { narrative: string; topic: string; mileston
 
 export function applyPerspectives(ctx: ProjectionCtx): void {
   ctx.sessionProjections.register({
-    key: 'fileActivity', schema: fileSchema,
+    key: 'fileActivity', stateSchema: fileStateSchema,
     init: () => ({ files: {}, pending: {}, recent: [], seq: 0 }),
-    apply: foldFile, view: viewFiles, stateVersion: 1,
+    apply: foldFile, wire: { viewSchema: fileSchema, view: viewFiles }, stateVersion: 1,
   })
   ctx.sessionProjections.register({
-    key: 'mechEvents', schema: mechSchema,
+    key: 'mechEvents', stateSchema: mechStateSchema,
     init: () => ({ items: [], seq: 0 }),
-    apply: foldMech, view: (s: { items: MechItem[] }) => ({ items: s.items }), stateVersion: 1,
+    apply: foldMech, wire: { viewSchema: mechSchema, view: (s: { items: MechItem[] }) => ({ items: s.items }) }, stateVersion: 1,
   })
   ctx.sessionProjections.register({
-    key: 'goalTrace', schema: goalSchema,
+    key: 'goalTrace', stateSchema: goalStateSchema,
     init: () => ({ items: [], seq: 0 }),
-    apply: foldGoal, view: (s: { items: GoalItem[] }) => ({ items: s.items }), stateVersion: 1,
+    apply: foldGoal, wire: { viewSchema: goalSchema, view: (s: { items: GoalItem[] }) => ({ items: s.items }) }, stateVersion: 1,
   })
   ctx.sessionProjections.register({
-    key: 'insightsScan', schema: scanSchema,
+    key: 'insightsScan', stateSchema: scanStateSchema,
     init: initScan, apply: foldScan,
-    view: (s: ScanState) => ({ items: s.items, saved: s.saved, policyBlocks: s.policyBlocks, transientErrs: s.transientErrs }), stateVersion: 2,
+    wire: { viewSchema: scanSchema, view: (s: ScanState) => ({ items: s.items, saved: s.saved, policyBlocks: s.policyBlocks, transientErrs: s.transientErrs }) }, stateVersion: 2,
   })
 
   // ── 洞察自動存檔 ──

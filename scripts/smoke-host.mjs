@@ -11,7 +11,7 @@
  * 用法:node scripts/smoke-host.mjs(先 pnpm build)
  */
 const reg = {
-  tools: [], routes: [], projections: [], provides: [], injects: [],
+  tools: [], routes: [], projections: [], projectionDefs: [], provides: [], injects: [],
   listeners: {}, opens: [], timers: 0,
 }
 
@@ -24,7 +24,7 @@ const ctx = {
   inject: (services, cb) => { reg.injects.push(services); cb(ctx) },
   effect: () => {},
   provide: (name) => reg.provides.push(name),
-  sessionProjections: { register: (d) => reg.projections.push(d.key) },
+  sessionProjections: { register: (d) => { reg.projections.push(d.key); reg.projectionDefs.push(d) } },
   storageDomain: { open: async (spec) => { reg.opens.push(spec.name); return fakeDomain } },
   llm: { stream: async function* () { /* no chunks */ } },
   webServer: { register: (r) => reg.routes.push(r.path) },
@@ -61,6 +61,22 @@ function check(kind, got, want) {
 }
 check('routes', reg.routes, expectRoutes)
 check('projections', reg.projections, expectProjections)
+// ── 投影契約回歸(2026-08-22:舊 `schema`/`view` 頂層欄位被現行 session-projection
+// 忽略 → 單元註冊成 host-only,客戶端永遠收不到;必須是 stateSchema + wire.{viewSchema,view})──
+{
+  let contractFail = 0
+  for (const d of reg.projectionDefs) {
+    const ok = d && typeof d.key === 'string' && d.stateSchema !== undefined && typeof d.init === 'function' && typeof d.apply === 'function' &&
+      d.wire !== undefined && d.wire.viewSchema !== undefined && typeof d.wire.view === 'function' &&
+      Number.isSafeInteger(d.stateVersion) && d.schema === undefined && d.view === undefined
+    if (!ok) {
+      contractFail += 1
+      console.error(`✗ projection 契約違反: ${d && d.key} 欄位=${JSON.stringify(Object.keys(d || {}))}`)
+    }
+  }
+  if (contractFail > 0) { fail += contractFail }
+  else { console.log(`✓ projection 契約(stateSchema + wire.viewSchema/view)全部 6 個過關`) }
+}
 check('provides', reg.provides, ['vectorMemory'])
 check('tools', reg.tools.map((t) => t && t.name), expectTools)
 check('event listeners', Object.entries(reg.listeners).flatMap(([n, fns]) => fns.map(() => n)), expectEvents)
