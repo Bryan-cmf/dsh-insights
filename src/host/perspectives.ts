@@ -1388,9 +1388,12 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         },
       })
 
-      // 記憶域一覽(記憶頁「智能模塊」資料源)。按項目隔離(用戶要求):
-      // 帶 sessionId 時解析其 cwd,只回同項目全部 session 的記憶 row
-      // (key 前綴 <sid>: / memagent:<sid>: / ms:<sid>:);不帶則回全部。
+      // 記憶域一覽(記憶頁「智能模塊」資料源)。**預設嚴格按 session 隔離**(用戶要求
+      // 2026-08-22:記憶頁出現其他 session 內容——同 cwd 的 session 群在一個工作目錄
+      // 下做不同任務,「同項目聚合」反而洩漏。改為:
+      // - 預設:只回本 session 的 row(key 前綴 <sid>:、memagent:<sid>:,或 row.sid === sid);
+      // - ?scope=project:白名單回退——解析 cwd,聚合同項目全部 session(舊行為);
+      // - ?scope=all:全部(診斷用)。
       webServer.register({
         kind: 'exact',
         path: '/api/memories',
@@ -1398,11 +1401,16 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           try {
             const url = new URL(String((req as { url?: string }).url || ''), 'http://localhost')
             const sidParam = url.searchParams.get('sessionId') || ''
-            // sessionId → cwd → 同項目所有 session id(資訊隔離的範圍)
-            let scopeSids: Set<string> | null = null
-            if (sidParam !== '') {
+            const scope = url.searchParams.get('scope') || ''
+            let scopeSids: Set<string> | null
+            if (scope === 'all') {
+              scopeSids = null // 診斷白名單:全部
+            } else if (sidParam === '') {
+              scopeSids = new Set<string>() // 無 sessionId 且非 all → 嚴格為空
+            } else {
               scopeSids = new Set([sidParam])
-              if (sessionQuery !== undefined) {
+              // 僅 scope=project 時做 cwd 聚合(同項目全部 session)
+              if (scope === 'project' && sessionQuery !== undefined) {
                 try {
                   const sessions = await sessionQuery.listSessions()
                   const me = sessions.find((s) => s.header && s.header.id === sidParam)
@@ -1432,8 +1440,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
             for (const [key, row] of entriesFn.call(t)) {
               if (scopeSids !== null) {
                 let inScope = false
+                const rr = row as { sid?: unknown }
                 for (const s of scopeSids) {
-                  if (key.startsWith(`${s}:`) || key.indexOf(`:${s}:`) !== -1) { inScope = true; break }
+                  if (
+                    key.startsWith(`${s}:`) ||
+                    key.startsWith(`memagent:${s}:`) ||
+                    (rr && typeof rr.sid === 'string' && rr.sid === s)
+                  ) { inScope = true; break }
                 }
                 if (!inScope) continue
               }

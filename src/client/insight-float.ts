@@ -12,6 +12,7 @@
  * 與 inputActions/sessionId 橋接到模組狀態。
  */
 import { createElement, useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Md } from './md.ts'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -39,8 +40,14 @@ const bridge: {
 // FAB 位置:可拖動,localStorage 持久(刷新/重啟後保持)
 const FAB_KEY = 'dsh-insights-fab-pos'
 const FAB_SIZE = 52
+// 面板大小:可拖動調整,localStorage 持久(刷新/重啟後保持)
+const PANEL_SIZE_KEY = 'dsh-insights-panel-size'
 const PANEL_W = 380
 const PANEL_H = 480
+const PANEL_MIN_W = 300
+const PANEL_MIN_H = 280
+const PANEL_MAX_W = 720
+const PANEL_MAX_H = 900
 
 function loadFabPos(): { left: number; top: number } | null {
   try {
@@ -61,8 +68,36 @@ function saveFabPos(p: { left: number; top: number }): void {
     // ignore
   }
 }
+function loadPanelSize(): { w: number; h: number } | null {
+  try {
+    const raw = window.localStorage.getItem(PANEL_SIZE_KEY)
+    if (raw !== null) {
+      const p = JSON.parse(raw) as { w?: unknown; h?: unknown }
+      if (typeof p.w === 'number' && typeof p.h === 'number' && p.w >= PANEL_MIN_W && p.h >= PANEL_MIN_H) {
+        return { w: Math.min(p.w, PANEL_MAX_W), h: Math.min(p.h, PANEL_MAX_H) }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+function savePanelSize(s: { w: number; h: number }): void {
+  try {
+    window.localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(s))
+  } catch {
+    // ignore
+  }
+}
 
-const uiState = { expanded: false, fabPos: loadFabPos() }
+const uiState = { expanded: false, fabPos: loadFabPos(), size: loadPanelSize() }
+function panelSize(): { w: number; h: number } {
+  const s = uiState.size
+  return {
+    w: s ? Math.min(Math.max(s.w, PANEL_MIN_W), PANEL_MAX_W) : PANEL_W,
+    h: s ? Math.min(Math.max(s.h, PANEL_MIN_H), PANEL_MAX_H) : PANEL_H,
+  }
+}
 /** 已從 host 還原過歷史的 session(避免重複 fetch) */
 const loadedSids: Record<string, boolean> = {}
 
@@ -87,7 +122,7 @@ const fab: CSSProperties = {
 }
 const panel: CSSProperties = {
   position: 'fixed', right: 24, bottom: 120, zIndex: 60,
-  width: 380, maxWidth: 'calc(100vw - 48px)', height: 480, maxHeight: 'calc(100vh - 160px)',
+  maxWidth: 'calc(100vw - 48px)', maxHeight: 'calc(100vh - 160px)',
   background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)',
   borderRadius: 12, boxShadow: 'var(--dsw-shadow-lv2, 0 8px 32px rgba(0,0,0,.3))',
   display: 'flex', flexDirection: 'column', overflow: 'hidden', pointerEvents: 'auto',
@@ -101,21 +136,22 @@ function fabStyle(): CSSProperties {
   return { ...fab, right: 'auto', bottom: 'auto', left, top }
 }
 function panelStyle(): CSSProperties {
-  if (uiState.fabPos === null) return panel
+  const { w, h } = panelSize()
+  if (uiState.fabPos === null) return { ...panel, width: w, height: h }
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const left = Math.min(Math.max(8, uiState.fabPos.left + FAB_SIZE / 2 - PANEL_W / 2), Math.max(8, vw - PANEL_W - 8))
+  const left = Math.min(Math.max(8, uiState.fabPos.left + FAB_SIZE / 2 - w / 2), Math.max(8, vw - w - 8))
   // FAB 在螢幕上半 → 面板往下開;下半 → 往上開
   const below = uiState.fabPos.top < vh / 2
-  let top = below ? uiState.fabPos.top + FAB_SIZE + 8 : uiState.fabPos.top - PANEL_H - 8
-  top = Math.min(Math.max(8, top), Math.max(8, vh - PANEL_H - 8))
-  return { ...panel, right: 'auto', bottom: 'auto', left, top }
+  let top = below ? uiState.fabPos.top + FAB_SIZE + 8 : uiState.fabPos.top - h - 8
+  top = Math.min(Math.max(8, top), Math.max(8, vh - h - 8))
+  return { ...panel, right: 'auto', bottom: 'auto', left, top, width: w, height: h }
 }
 const panelHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', flex: 'none' }
 const headBtn: CSSProperties = { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', padding: '0 4px', userSelect: 'none', fontSize: 14, flex: 'none' }
 const panelBody: CSSProperties = { flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }
 const userBubble: CSSProperties = { alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--dsw-alias-state-business-tertiary)', color: 'var(--dsw-alias-state-business-primary)', borderRadius: 10, padding: '6px 10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }
-const aiBubble: CSSProperties = { alignSelf: 'flex-start', maxWidth: '94%', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 10, padding: '8px 10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6, fontSize: 12, color: 'var(--dsw-alias-label-primary)' }
+const aiBubble: CSSProperties = { alignSelf: 'flex-start', maxWidth: '94%', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 10, padding: '6px 10px', fontSize: 12, color: 'var(--dsw-alias-label-primary)' }
 const thinkBlock: CSSProperties = { alignSelf: 'flex-start', maxWidth: '94%', borderLeft: '2px solid var(--dsw-alias-markdown-citation)', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 6, padding: '6px 10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5, fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
 const thinkToggle: CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', userSelect: 'none', fontWeight: 600 }
 const inputRow: CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-end', padding: '8px 12px', borderTop: '1px solid var(--dsw-alias-border-l1)', flex: 'none' }
@@ -265,6 +301,31 @@ function FloatingInsightChat(): ReactNode {
     window.addEventListener('mouseup', onUp)
   }
 
+  // 面板大小調整:右緣(e)/下緣(s)/右下角(se)拖拽;放開時持久化
+  function startResize(e: { clientX: number; clientY: number; preventDefault: () => void }, dir: 'e' | 's' | 'se'): void {
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startSize = panelSize()
+    const onMove = (ev: { clientX: number; clientY: number }): void => {
+      let w = startSize.w
+      let h = startSize.h
+      if (dir === 'e' || dir === 'se') w = startSize.w + (ev.clientX - startX)
+      if (dir === 's' || dir === 'se') h = startSize.h + (ev.clientY - startY)
+      w = Math.min(Math.max(w, PANEL_MIN_W), PANEL_MAX_W)
+      h = Math.min(Math.max(h, PANEL_MIN_H), PANEL_MAX_H)
+      uiState.size = { w, h }
+      force()
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (uiState.size !== null) savePanelSize(uiState.size)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   function send(): void {
     const el = inputRef.current
     const q = el && el.value ? el.value.trim() : ''
@@ -322,13 +383,17 @@ function FloatingInsightChat(): ReactNode {
         onClick: () => setExpandedThink(thinkOpen ? -1 : idx),
       }, thinkOpen ? '深思過程 ▾' : '深思過程 ▸'),
       thinkOpen ? createElement('div', { style: thinkBlock }, hasThink ? m.thinking : '(本次無深思輸出——模型未產生推理內容)') : null,
-      createElement('div', { style: aiBubble }, m.text),
+      createElement('div', { style: aiBubble }, createElement(Md, { text: m.text })),
       createElement('button', { style: actionBtn, onClick: () => toComposer(suggestion !== '' ? suggestion : m.text) }, suggestion !== '' ? '⤴ 傳送建議' : '⤴ 傳送全文'))
   })
 
   const noSession = bridge.scan === undefined && bridge.inputActions === undefined
 
   return createElement('div', { style: panelStyle() },
+    // 縮放手柄:右緣/下緣/右下角(拖動調整大小,放開持久化到 localStorage)
+    createElement('div', { key: 'rz-e', onMouseDown: (e: any) => startResize(e, 'e'), title: '拖動調整寬度', style: { position: 'absolute', top: 0, bottom: 0, right: -3, width: 7, cursor: 'ew-resize', zIndex: 3 } }),
+    createElement('div', { key: 'rz-s', onMouseDown: (e: any) => startResize(e, 's'), title: '拖動調整高度', style: { position: 'absolute', left: 0, right: 0, bottom: -3, height: 7, cursor: 'ns-resize', zIndex: 3 } }),
+    createElement('div', { key: 'rz-se', onMouseDown: (e: any) => startResize(e, 'se'), title: '拖動調整大小', style: { position: 'absolute', right: -3, bottom: -3, width: 15, height: 15, cursor: 'nwse-resize', zIndex: 4 } }),
     createElement('div', { style: { ...panelHead, cursor: 'grab' }, onMouseDown: startDrag, title: '拖動面板移動位置' },
       createElement('span', null, '洞察對話'),
       createElement('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' } }, '方向評估 · V4 flash 深思'),

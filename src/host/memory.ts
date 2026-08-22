@@ -35,6 +35,8 @@ interface MemoryRecord {
   hits: number
   /** 0 = never expires. */
   expiresAt: number
+  /** 寫入此記憶的 session id(mem_save 工具擷取自執行上下文;供記憶頁嚴格隔離)。 */
+  sid?: string
 }
 
 interface MemoryHit {
@@ -110,7 +112,7 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
     return table
   }
 
-  async function save(content: string, tags: string[], ttlDays: number): Promise<{ id: string; createdAt: number }> {
+  async function save(content: string, tags: string[], ttlDays: number, sid?: string): Promise<{ id: string; createdAt: number }> {
     const t = await ensureTable()
     const now = Date.now()
     const record: MemoryRecord = {
@@ -121,6 +123,7 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
       updatedAt: now,
       hits: 0,
       expiresAt: ttlDays > 0 ? now + ttlDays * 86400000 : 0,
+      ...(typeof sid === 'string' && sid !== '' ? { sid } : {}),
     }
     await t.put(record.id, record)
     return { id: record.id, createdAt: now }
@@ -198,14 +201,17 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
       ttlDays: { type: 'number', description: 'Override TTL in days (0 = forever). Defaults to config.' },
     },
     output: { schema: { type: 'string' }, render(_a, v) { return [{ type: 'text', text: v }] } },
-    async execute(args) {
+    async execute(args, exec) {
       if (typeof args.content !== 'string' || args.content.trim() === '') {
         return 'ERROR: content must be a non-empty string'
       }
       const tags = Array.isArray(args.tags) ? args.tags.filter((t): t is string => typeof t === 'string') : []
       const ttl = typeof args.ttlDays === 'number' && args.ttlDays >= 0 ? Math.floor(args.ttlDays) : config.ttlDays
+      // 擷取呼叫方 session id(agent.id 即 SessionId),讓記憶頁可按 session 隔離展示
+      const execCtx = exec as { agent?: { id?: unknown } } | undefined
+      const sid = execCtx && execCtx.agent && typeof execCtx.agent.id === 'string' ? execCtx.agent.id : undefined
       try {
-        const saved = await save(args.content.trim(), tags, ttl)
+        const saved = await save(args.content.trim(), tags, ttl, sid)
         return `saved memory ${saved.id} at ${new Date(saved.createdAt).toISOString()} (ttl: ${ttl === 0 ? 'forever' : `${ttl}d`})`
       } catch (error) {
         return `ERROR: memory store unavailable: ${String(error)}`

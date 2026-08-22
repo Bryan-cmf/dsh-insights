@@ -18,11 +18,11 @@ Technology serves value — so the programmer never loses the thread.
 ## Four views (conversation view ring)
 
 - **Observation** (order 20) — text-first: observation narrative / milestones and a whole-project overview on top; overview stats, file activity, mechanism events, tool/skill TOP, recent executions sink to the bottom
-- **Memory** (order 30) — smart memory modules (**isolated per project**, sessions aggregated by cwd; noise filtering) + four lenses over memory activity
+- **Memory** (order 30) — smart memory modules (**strictly isolated per session** — no other session's rows mix in [since v0.10.0; the old "aggregate by cwd" mode is reachable via `?scope=project` on `/api/memories`], `mem_save` rows stamped with their session id) + four lenses over memory activity
 - **Insights** (order 40) — value anchors (goals / tasks), auto insight cards (every 5 turns), value summary cards, a **direction-evolution** timeline, and a **potential-paths** generator (adoptable as todos or pushed to the composer); generated artifacts persist across page switches
 - **Notes** (order 50) — handwritten todos / notes + one-click adoption of observation-suggested todos, auto-refreshed at turn end
 
-Extras: a prompt optimizer (the composer's「Optimize」button) and an insight FAB (readable in night mode).
+Extras: a prompt optimizer (the composer's「Optimize」button), an insight FAB (readable in night mode, draggable), a **resizable insight panel** (drag right/bottom/corner edges; size survives refresh), and first-class **Markdown rendering** everywhere prose is shown (observation narrative, memory modules, auto-insight, value summary, insight chat) via the same `MarkdownText` pipeline the main conversation uses.
 
 ## Error taxonomy
 

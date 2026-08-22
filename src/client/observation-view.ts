@@ -12,6 +12,7 @@
  * 兩個區塊各自在投影缺席時優雅降級。
  */
 import { createElement, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { Md } from './md.ts'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -123,7 +124,7 @@ function ObsNarrative(props: { sessionId?: string; refreshKey: number }): ReactN
       ? createElement('div', { style: { marginBottom: 6, color: 'var(--dsw-alias-brand-primary)', fontWeight: 600 } }, `主題:${obs.topic}`)
       : null,
     obs.narrative !== undefined && obs.narrative !== ''
-      ? createElement('div', { style: { lineHeight: 1.6, whiteSpace: 'pre-wrap' } }, obs.narrative)
+      ? createElement(Md, { text: obs.narrative, fontSize: 13 })
       : null,
     milestones.length > 0
       ? createElement('div', { style: { marginTop: 8 } },

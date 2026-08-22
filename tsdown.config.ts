@@ -1,7 +1,9 @@
 import { defineConfig } from 'tsdown'
 
 const ID = '@bryan-cmf/dsh-insights'
-const EXTERNALS = ['react', 'react/jsx-runtime']
+// react 由 web shell staticModules 提供;dsh-client-ui-primitives 同為 shell 靜態種子
+// (MarkdownText 渲染管線),均保持外部 require,不打包。
+const EXTERNALS = ['react', 'react/jsx-runtime', '@deepseek-ai/dsh-client-ui-primitives']
 
 export default defineConfig([
   {

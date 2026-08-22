@@ -3,12 +3,14 @@
  *
  * 「記憶」tab(order 30):
  * 上段·智能模塊——記憶智能體與自動存檔寫入 vector_memory 域的內容,
- *   按模塊分組(卡點/失敗/技術/學習/決策/踩坑/里程碑/洞察),跨 session 累積;
- *   記憶智能體每 3 輪從近期軌跡提煉(LLM 理解後歸類,取代 regex 死分類)。
+ *   按模塊分組(卡點/失敗/技術/學習/決策/踩坑/里程碑/洞察);**嚴格按 session
+ *   隔離**(2026-08-22 用戶反饋:同項目聚合會混入其他 session 內容,改為只顯示
+ *   本 session;/api/memories 預設只回本 session 的 row)。
  * 下段·記憶活動——本 session 的 mem_save/mem_search 活動四透鏡(memActivity 投影)。
  * 回合結束自動刷新(infraView 投影)+ 30s 輪詢兜底。
  */
 import { createElement, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { Md } from './md.ts'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -125,14 +127,15 @@ function MemoryModules(props: { refreshKey: number; sessionId?: string }): React
   if (modules.length === 0) return null
 
   return createElement('div', { style: card },
-    createElement('div', { style: cardTitle }, `智能記憶模塊(${shown} 條 · 本項目累積)`),
+    createElement('div', { style: cardTitle, title: '預設嚴格按 session 隔離:只顯示本 session 記憶智能體提煉與自動存檔的內容;同項目其他 session 的內容不再混入。' }, `智能記憶模塊(${shown} 條 · 本 session)`),
     modules.map((m) =>
       createElement('div', { key: m, style: { marginBottom: 6 } },
         createElement('div', { style: { fontSize: 11, fontWeight: 600, marginBottom: 4, color: 'var(--dsw-alias-label-secondary)' } }, `${m}(${buckets[m]!.length})`),
         buckets[m]!.slice(0, 8).map((it) =>
           createElement('div', { key: it.key, style: row },
             createElement('span', { style: { ...badge, ...(MODULE_TONE[m] || {}) } }, m),
-            createElement('span', { style: { flex: 1, minWidth: 0, wordBreak: 'break-word' }, title: it.content }, it.content),
+            createElement('div', { style: { flex: 1, minWidth: 0 }, title: it.content },
+              createElement(Md, { text: it.content })),
             it.createdAt > 0
               ? createElement('span', { style: { ...badge, color: 'var(--dsw-alias-label-tertiary)' } }, new Date(it.createdAt).toISOString().slice(5, 10))
               : null)))))

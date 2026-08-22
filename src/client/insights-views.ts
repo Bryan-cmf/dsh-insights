@@ -10,6 +10,7 @@
  * composer 上方常駐提醒欄——最新重要性 ≥2 洞察即時可見,‼級警示色。
  */
 import { createElement, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { Md } from './md.ts'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -192,7 +193,7 @@ function InsightsView(props: ViewProps): ReactNode {
     autoInsight !== ''
       ? createElement('div', { style: card },
           createElement('div', { style: cardTitle }, '自動洞察(每 5 輪更新)'),
-          createElement('div', { style: { lineHeight: 1.6, whiteSpace: 'pre-wrap' } }, autoInsight),
+          createElement(Md, { text: autoInsight }),
           canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(autoInsight) }, '⤴ 傳送到主對話框') : null)
       : null,
     // 價值總結卡
@@ -202,7 +203,7 @@ function InsightsView(props: ViewProps): ReactNode {
         createElement('button', { style: sendBtnSmall, onClick: genSummary, disabled: summaryBusy }, summaryBusy ? '生成中…' : '生成本 session 價值總結')),
       summary !== ''
         ? createElement('div', { style: { marginTop: 8 } },
-            createElement('div', { style: { lineHeight: 1.6, whiteSpace: 'pre-wrap' } }, summary),
+            createElement(Md, { text: summary }),
             canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(summary) }, '⤴ 傳送到主對話框') : null)
         : createElement('div', { style: { ...emptyText, marginTop: 6, fontSize: 11 } }, '一鍵生成本 session 的價值總結(可貼進週報/匯報,或傳送到主對話框變成新指令)。')),
     // 方向演變時間線
@@ -232,7 +233,7 @@ function InsightsView(props: ViewProps): ReactNode {
                 createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 } },
                   createElement('span', { style: { fontWeight: 700, flex: 1, minWidth: 0 } }, p.name),
                   createElement('span', { style: { ...badge, ...(effortColor[p.effort] || {}) } }, `成本 ${p.effort}`)),
-                p.value !== '' ? createElement('div', { style: { lineHeight: 1.5, fontSize: 12 } }, p.value) : null,
+                p.value !== '' ? createElement(Md, { text: p.value, fontSize: 12 }) : null,
                 p.firstStep !== '' ? createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, `第一步:${p.firstStep}`) : null,
                 createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
                   canDraft ? createElement('button', { style: actionBtn, onClick: () => setDraft(`【潛力路徑】${p.name}\n${p.firstStep}`) }, '⤴ 傳到主對話框') : null,
