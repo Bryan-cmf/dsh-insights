@@ -71,6 +71,7 @@ Source layout: host entry `src/index.ts` (merged Config + union of injects); fea
 
 | Version | Highlights |
 |---|---|
+| v0.10.1 | Mobile fix: FAB / panel head / resize handles now use Pointer Events + `touch-action: none` — dragging works with touch instead of being treated as page scroll |
 | v0.10.0 | Strict per-session memory isolation; native Markdown rendering via the official `MarkdownText` pipeline; resizable insight panel |
 | v0.9.0 | Draggable insight FAB (position persisted) |
 | v0.8.0 | Insight chat history persisted (`insight_chat` domain, per session) |

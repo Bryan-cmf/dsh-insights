@@ -119,6 +119,8 @@ const fab: CSSProperties = {
   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
   cursor: 'pointer', boxShadow: 'var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.25))',
   fontSize: 11, fontWeight: 700, userSelect: 'none', pointerEvents: 'auto',
+  // 手機端可拖:讓瀏覽器把手勢交給頁面而不是當成滾動(配合 pointer events)
+  touchAction: 'none',
 }
 const panel: CSSProperties = {
   position: 'fixed', right: 24, bottom: 120, zIndex: 60,
@@ -147,7 +149,7 @@ function panelStyle(): CSSProperties {
   top = Math.min(Math.max(8, top), Math.max(8, vh - h - 8))
   return { ...panel, right: 'auto', bottom: 'auto', left, top, width: w, height: h }
 }
-const panelHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', flex: 'none' }
+const panelHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', flex: 'none', userSelect: 'none', touchAction: 'none' }
 const headBtn: CSSProperties = { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', padding: '0 4px', userSelect: 'none', fontSize: 14, flex: 'none' }
 const panelBody: CSSProperties = { flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }
 const userBubble: CSSProperties = { alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--dsw-alias-state-business-tertiary)', color: 'var(--dsw-alias-state-business-primary)', borderRadius: 10, padding: '6px 10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }
@@ -267,11 +269,19 @@ function FloatingInsightChat(): ReactNode {
   }
 
   // 可拖動 FAB/面板頭:拖動改變錨點(存 localStorage);原地放開 = 點擊(展開面板)
-  function startDrag(e: { target: unknown; currentTarget: unknown; clientX: number; clientY: number; preventDefault: () => void }): void {
+  // 可拖動 FAB/面板頭 + 面板縮放:Pointer Events(滑鼠/觸控/筆統一),
+  // `touch-action: none` 讓觸屏把手勢交給頁面(否則被當成滾動);
+  // pointer capture 保證手指滑出元素後拖拽不中斷。
+  function startDrag(e: { target: unknown; currentTarget: unknown; clientX: number; clientY: number; preventDefault: () => void; pointerId?: number }): void {
     const t = e.target as { closest?: (sel: string) => unknown } | null
     if (t && typeof t.closest === 'function' && t.closest('[data-nodrag]') !== null) return
     e.preventDefault()
     const el = e.currentTarget as HTMLElement
+    try {
+      if (typeof e.pointerId === 'number') el.setPointerCapture?.(e.pointerId)
+    } catch {
+      // 某些瀏覽器/邊緣情況忽略
+    }
     const rect = el.getBoundingClientRect()
     const startX = e.clientX
     const startY = e.clientY
@@ -288,8 +298,9 @@ function FloatingInsightChat(): ReactNode {
       force()
     }
     const onUp = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
       if (moved) {
         if (uiState.fabPos !== null) saveFabPos(uiState.fabPos)
       } else {
@@ -297,13 +308,20 @@ function FloatingInsightChat(): ReactNode {
         force()
       }
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
-  // 面板大小調整:右緣(e)/下緣(s)/右下角(se)拖拽;放開時持久化
-  function startResize(e: { clientX: number; clientY: number; preventDefault: () => void }, dir: 'e' | 's' | 'se'): void {
+  // 面板大小調整:右緣(e)/下緣(s)/右下角(se)拖拽;放開時持久化(同上,pointer 事件)
+  function startResize(e: { currentTarget: unknown; clientX: number; clientY: number; preventDefault: () => void; pointerId?: number }, dir: 'e' | 's' | 'se'): void {
     e.preventDefault()
+    const el = e.currentTarget as HTMLElement
+    try {
+      if (typeof e.pointerId === 'number') el.setPointerCapture?.(e.pointerId)
+    } catch {
+      // ignore
+    }
     const startX = e.clientX
     const startY = e.clientY
     const startSize = panelSize()
@@ -318,12 +336,14 @@ function FloatingInsightChat(): ReactNode {
       force()
     }
     const onUp = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
       if (uiState.size !== null) savePanelSize(uiState.size)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
   function send(): void {
@@ -365,7 +385,7 @@ function FloatingInsightChat(): ReactNode {
     return createElement('div', {
       style: { ...fabStyle(), cursor: 'grab' },
       title: '洞察智能體——拖動到任意位置;點擊開啟對話',
-      onMouseDown: startDrag,
+      onPointerDown: startDrag,
     },
       createElement('span', null, '洞察'))
   }
@@ -391,10 +411,10 @@ function FloatingInsightChat(): ReactNode {
 
   return createElement('div', { style: panelStyle() },
     // 縮放手柄:右緣/下緣/右下角(拖動調整大小,放開持久化到 localStorage)
-    createElement('div', { key: 'rz-e', onMouseDown: (e: any) => startResize(e, 'e'), title: '拖動調整寬度', style: { position: 'absolute', top: 0, bottom: 0, right: -3, width: 7, cursor: 'ew-resize', zIndex: 3 } }),
-    createElement('div', { key: 'rz-s', onMouseDown: (e: any) => startResize(e, 's'), title: '拖動調整高度', style: { position: 'absolute', left: 0, right: 0, bottom: -3, height: 7, cursor: 'ns-resize', zIndex: 3 } }),
-    createElement('div', { key: 'rz-se', onMouseDown: (e: any) => startResize(e, 'se'), title: '拖動調整大小', style: { position: 'absolute', right: -3, bottom: -3, width: 15, height: 15, cursor: 'nwse-resize', zIndex: 4 } }),
-    createElement('div', { style: { ...panelHead, cursor: 'grab' }, onMouseDown: startDrag, title: '拖動面板移動位置' },
+    createElement('div', { key: 'rz-e', onPointerDown: (e: any) => startResize(e, 'e'), title: '拖動調整寬度', style: { position: 'absolute', top: 0, bottom: 0, right: -3, width: 7, cursor: 'ew-resize', zIndex: 3, touchAction: 'none' } }),
+    createElement('div', { key: 'rz-s', onPointerDown: (e: any) => startResize(e, 's'), title: '拖動調整高度', style: { position: 'absolute', left: 0, right: 0, bottom: -3, height: 7, cursor: 'ns-resize', zIndex: 3, touchAction: 'none' } }),
+    createElement('div', { key: 'rz-se', onPointerDown: (e: any) => startResize(e, 'se'), title: '拖動調整大小', style: { position: 'absolute', right: -3, bottom: -3, width: 15, height: 15, cursor: 'nwse-resize', zIndex: 4, touchAction: 'none' } }),
+    createElement('div', { style: { ...panelHead, cursor: 'grab' }, onPointerDown: startDrag, title: '拖動面板移動位置' },
       createElement('span', null, '洞察對話'),
       createElement('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' } }, '方向評估 · V4 flash 深思'),
       st.messages.length > 0

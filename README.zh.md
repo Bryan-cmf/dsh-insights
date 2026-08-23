@@ -72,6 +72,7 @@ node scripts/smoke-host.mjs   # host 結構冒煙:9 路由/6 投影/6 工具/1 �
 
 | 版本 | 亮點 |
 |---|---|
+| v0.10.1 | 手機端修復:FAB / 面板頭 / 縮放手柄改用 Pointer Events + `touch-action: none`——觸控可拖,不再被當成頁面滾動 |
 | v0.10.0 | 記憶嚴格按 session 隔離;正文原生 Markdown 渲染(官方 `MarkdownText` 管線);洞察面板可調整大小 |
 | v0.9.0 | 可拖動洞察 FAB(位置持久化) |
 | v0.8.0 | 洞察對話歷史持久化(`insight_chat` 域,按 session) |
