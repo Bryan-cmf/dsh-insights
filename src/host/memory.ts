@@ -393,7 +393,10 @@ interface ObsCtx {
 let idCounter = 0
 function nextId(): string {
   idCounter += 1
-  return `mem-${Date.now().toString(36)}-${idCounter.toString(36)}`
+  // 隨機後綴(F3 修復):時間戳+進程內計數器在同毫秒+計數器重置時跨會話碰撞
+  // (實測存量 17 組同 record.id)。id 為不透明字符串,後綴不影響任何消費方。
+  const rnd = Math.random().toString(36).slice(2, 6)
+  return `mem-${Date.now().toString(36)}-${idCounter.toString(36)}-${rnd}`
 }
 
 function tokenize(text: string): string[] {
@@ -527,7 +530,10 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
     // memory v2:存原文即返回(同步路徑不變),嵌入走異步隊列(SPEC §6)。
     if (embCfg.enabled) {
       void maybeBackfill()
-      if (getEmbedder() !== undefined) queue.enqueue(record.id, embedTextOf(record))
+      // F2 修復:總是入隊——embedder 暫不可用由隊列重試(5s/30s/120s)+
+      // drop→backfill 閉環兜住;save 期預檢可用性反而繞過閉環,使該記憶
+      // 向量缺失直到重啟或下一次無關的 drop 事件。
+      queue.enqueue(record.id, embedTextOf(record))
     }
     return { id: record.id, createdAt: now }
   }

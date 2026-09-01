@@ -467,3 +467,44 @@ test('applyMemory: 隊列清理經 ctx.effect 註冊,ctx dispose 後 save 不再
     'dispose 後 embedder 不再被調用',
   )
 })
+
+// ── 7. F2/F3 修復契約(隊長代碼審查 2026-09-01)───────────────────────────────
+
+test('F2 契約: embedder 缺失時 mem_save 仍無條件入隊(閉環不被預檢繞過)', async () => {
+  const h = await setup({ config: { ...BASE_CONFIG, embedding: EMB_ON } }) // 無 embedder 服務
+  await saveMem(h, 'saved while embedder down', ['resilience'])
+  const health = await h.tools.get('mem_health').execute({})
+  // 修復前:save 路徑預檢 getEmbedder()→undefined→不入隊(enqueued 恆 0),
+  // 向量缺失直到重啟。修復後:隊列 stats 立即可見 enqueued≥1。
+  assert.match(health, /embedding queue: enqueued [1-9]/, `save 應無條件入隊: ${health}`)
+  await h.dispose()
+})
+
+test('id 空間契約: slug-keyed 記憶(memory agent 寫入形態)語義命中以 table key 浮出', async () => {
+  // 生產 store 實測:603 條中 558 條以語義 slug 為 key('compaction:1' 等),
+  // record.id 僅為寫入者元數據。向量表/融合/組裝必須全程以 table key 為 id。
+  const seed = vectorFor({ 'alpha beta gamma': [1, 0, 0, 0], zzzz: [1, 0, 0, 0] }, 4)
+  const a = await setup({ config: { ...BASE_CONFIG, embedding: EMB_ON }, embedder: makeEmbedder({ dim: 4, seed }) })
+  await saveMem(a, 'alpha beta gamma', ['greek'])
+  await a.dispose() // flush 到介質
+
+  // 把 id-key 改寫為 slug-key(模擬 memory agent 形態;record.id 保留原值)
+  const doc = a.st.medium.get('vector_memory')
+  const recs = doc.tables.get('memories')
+  const [[oldKey, rec]] = [...recs.entries()]
+  recs.delete(oldKey)
+  recs.set('compaction:1', rec)
+
+  const stB = makeFakeStorage()
+  stB.medium.set('vector_memory', structuredClone(doc))
+  const b = await setup({ config: { ...BASE_CONFIG, embedding: EMB_ON }, storage: stB, embedder: makeEmbedder({ dim: 4, seed }) })
+  // backfill 為火忘式,僅在讀/寫時觸發:先做一次無關搜索點火,再等向量落盤。
+  // 注意:fake storage 每次 flush 會替換 Map 實例,輪詢須重新解析引用。
+  await b.tools.get('mem_search').execute({ query: 'warmup-trigger-backfill' })
+  await waitFor(() => stB.medium.get('vector_memory')?.tables.get('memory_vectors')?.has('compaction:1') ?? false, 3000, 'backfill 應以 slug key 寫向量')
+
+  const out = await b.tools.get('mem_search').execute({ query: 'zzzz' }) // kw 零重疊→純語義
+  assert.ok(out.includes('[compaction:1]'), `slug-keyed 語義命中應以 key 浮出: ${out}`)
+  assert.ok(out.includes('via: sem'), `應標記語義來源: ${out}`)
+  await b.dispose()
+})
