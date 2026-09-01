@@ -5,3 +5,6 @@ lib/
 .DS_Store
 
 .pnpm-store/
+
+# 評測 fixture 含真實語料派生數據,僅本地再生（gen-d1-query-fixture.mjs）
+scripts/fixtures/

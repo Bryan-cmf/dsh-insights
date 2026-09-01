@@ -61,6 +61,7 @@
     "types": "tsc -p tsconfig.json",
     "bundle": "tsdown",
     "build": "pnpm clean && pnpm types && pnpm bundle",
+    "test": "node --test test/*.test.mjs",
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {

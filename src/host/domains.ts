@@ -34,6 +34,23 @@ export const memorySchema = zod.object({
   sid: zod.string().optional(),
 })
 
+/**
+ * memory v2(SPEC dsh-embed-spec.md §5):語義向量表。
+ * 行 = 記憶 id → {fp, dim, vec, ts};fp 為指紋 `{backend}@{dim}`,
+ * fp ≠ 當前配置指紋的行視為過期,由 memory 模組觸發單條異步重嵌。
+ * vec 存 float32 值(JSON number[]),512 維 ≈ 5KB/條。
+ *
+ * 域版本保持 1 不 bump:dsh-storage-json 的 per-record 語義為
+ * 「version bump discards stale records」,bump 會丟棄全部存量記憶;
+ * 而 tables 集合不參與 open 校驗,舊介質加表開啟安全(缺表初始化為空)。
+ */
+export const memoryVectorSchema = zod.object({
+  fp: zod.string(),
+  dim: zod.number(),
+  vec: zod.array(zod.number()),
+  ts: zod.number(),
+})
+
 /** observation 域 schema(perspectives 超集版;suggestedTodos/insight/summary/paths 可選,與 insight 模組的子集讀取相容)。 */
 export const obsSchema = zod.object({
   sessionId: zod.string(),
@@ -71,9 +88,27 @@ let vectorMemoryDomain: Promise<DomainLike> | undefined
 let observationDomain: Promise<DomainLike> | undefined
 let insightChatDomain: Promise<DomainLike> | undefined
 
+/**
+ * 測試專用:清除域單例 memo,讓每個測試場景拿到全新 open。
+ * 生產代碼不得調用(單例是為了防止同 ctx 重複 open 拋 DomainError)。
+ */
+export function resetDomainSingletonsForTest(): void {
+  vectorMemoryDomain = undefined
+  observationDomain = undefined
+  insightChatDomain = undefined
+}
+
 export function openVectorMemoryDomain(sd: StorageDomainLike): Promise<DomainLike> {
   if (vectorMemoryDomain === undefined) {
-    const p = sd.open({ name: 'vector_memory', version: 1, tables: { memories: domainTable(memorySchema) } })
+    const p = sd.open({
+      name: 'vector_memory',
+      version: 1,
+      tables: {
+        memories: domainTable(memorySchema),
+        // memory v2:加表不 bump version(見 memoryVectorSchema 註釋)。
+        memory_vectors: domainTable(memoryVectorSchema),
+      },
+    })
     vectorMemoryDomain = p
     p.catch(() => { if (vectorMemoryDomain === p) vectorMemoryDomain = undefined })
   }

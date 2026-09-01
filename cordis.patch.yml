@@ -7,3 +7,13 @@
 - insert:
     - id: insights
       name: '@bryan-cmf/dsh-insights'
+      # memory v2 灰度開關(SPEC dsh-embed-spec.md §7):默認 off,off 時
+      # mem_save/mem_search 行為與 v1 逐字節一致。入口 Config 為扁平鍵,
+      # 此塊經 schemastery 非 strict object 透傳給 memory 模組;開啟語義
+      # 檢索改 `embedding.enabled: true`(需 dsh-embed 插件在線)。
+      # dim 默認 2560(Qwen3-4B 全維;F-QA-2:@512 純語義僅 86.5%,@2560 96.2%)。
+      config:
+        embedding:
+          enabled: false
+          backend: qwen3-4b-fp16
+          dim: 2560
