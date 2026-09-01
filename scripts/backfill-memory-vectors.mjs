@@ -33,7 +33,7 @@ function parseArgs(argv) {
   const opts = {
     storage: join(homedir(), '.dsh', 'storages', 'vector_memory.json'),
     backend: 'qwen3-4b-fp16',
-    dim: 512,
+    dim: 2560, // R2F2:對齊生產默認(SPEC v1.3;舊默認 512 會寫出與配置指紋不符的行)
     sidecar: 'tf',
     batch: 16, // SPEC §6:批量 16 條/次
     dryRun: false,
@@ -67,19 +67,31 @@ function parseArgs(argv) {
 
 function assertDshStopped(force) {
   if (force) return
-  let out = ''
+  const suspicious = []
+  // R2F3 實測(macOS pgrep 怪癖):帶路徑分隔符的 pattern(dsh/lib/bin.js 等)
+  // 對長 cmdline 全部漏配;唯一可靠的是純參數段 'bin.js (web|serve)'。
   try {
-    out = execFileSync('pgrep', ['-fl', 'dsh'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-  } catch {
-    return // pgrep exit 1 = 無匹配進程
-  }
-  const suspicious = out.split('\n').filter((l) => /\bdsh\s+(web|serve)\b|dsh-web-app/.test(l))
+    const out = execFileSync('pgrep', ['-fl', 'bin.js (web|serve)'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    suspicious.push(...out.split('\n').filter((l) => l.includes('dsh') && l.trim() !== ''))
+  } catch { /* pgrep exit 1 = 無匹配 */ }
+  // 雙保險:默認端口 3080 處於 LISTEN 即視為 DSH 在運行(覆蓋非常規啟動路徑)。
+  try {
+    const lsof = execFileSync('lsof', ['-nP', '-iTCP:3080', '-sTCP:LISTEN'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    if (lsof.trim() !== '') suspicious.push(`port 3080 LISTEN: ${lsof.split('\n')[1] ?? ''}`.trim())
+  } catch { /* lsof 非零 = 無監聽 */ }
   if (suspicious.length > 0) {
     console.error('偵測到疑似運行中的 DSH 進程(dsh-storage-json 內存態會覆蓋本腳本落盤結果):')
     for (const l of suspicious) console.error(`  ${l}`)
     console.error('請先停止 DSH,或確認無誤後加 --force。')
     process.exit(1)
   }
+}
+
+// ── embed 配方(必須與生產 embedTextOf 完全一致,否則同一指紋下混入兩種向量)──
+
+function embedTextOf(rec) {
+  const tags = Array.isArray(rec.tags) ? rec.tags : []
+  return tags.length > 0 ? `${rec.content} tags: ${tags.join(', ')}` : rec.content
 }
 
 // ── sidecar HTTP(SPEC §4 契約) ─────────────────────────────────────────────
@@ -129,7 +141,7 @@ async function main() {
     if (rec.expiresAt !== 0 && rec.expiresAt <= now) continue // 過期記憶不嵌入
     const row = vectors[id]
     if (row && row.fp === fp && row.dim === opts.dim && Array.isArray(row.vec)) continue
-    todo.push({ id, text: `${rec.content} ${(rec.tags ?? []).join(' ')}`.trim() })
+    todo.push({ id, text: embedTextOf(rec) })
   }
   console.log(`memories: ${Object.keys(memories).length}, vectors: ${Object.keys(vectors).length}, fingerprint: ${fp}`)
   console.log(`待嵌入: ${todo.length} 條(缺失或指紋過期)`)
