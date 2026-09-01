@@ -1502,6 +1502,131 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         },
       })
 
+      // 記憶數據看板(設置頁「記憶數據」):分類 + 參數 + 增長趨勢(全局,非 session 隔離)
+      webServer.register({
+        kind: 'exact',
+        path: '/api/memory/stats',
+        handler: async (_req: unknown, res: unknown) => {
+          try {
+            const t = await ensureTable()
+            if (!t) {
+              sendJsonTo(res, 200, { ok: false, error: 'memory table unavailable' })
+              return
+            }
+            const entriesFn = (t as unknown as { entries?: () => Iterable<[string, unknown]> }).entries
+            if (typeof entriesFn !== 'function') {
+              sendJsonTo(res, 200, { ok: false, error: 'memory table entries unavailable' })
+              return
+            }
+            const pad = (n: number): string => (n < 10 ? `0${n}` : String(n))
+            const dayOf = (ms: number): string => {
+              const d = new Date(ms)
+              return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+            }
+            const now = Date.now()
+            const taxonomy = new Map<string, number>()
+            const byDay = new Map<string, { added: number; hits: number }>()
+            let total = 0
+            let totalHits = 0
+            let hitsCells = 0
+            let tagCells = 0
+            let expired = 0
+            let oldestMs = 0
+            let newestMs = 0
+            for (const [, row] of entriesFn.call(t)) {
+              const r = row as { content?: unknown; tags?: unknown; createdAt?: unknown; expiresAt?: unknown; hits?: unknown }
+              if (!r || typeof r !== 'object' || typeof r.content !== 'string') continue
+              total += 1
+              const createdAt = typeof r.createdAt === 'number' ? r.createdAt : 0
+              if (createdAt > 0) {
+                if (oldestMs === 0 || createdAt < oldestMs) oldestMs = createdAt
+                if (createdAt > newestMs) newestMs = createdAt
+                const key = dayOf(createdAt)
+                const cur = byDay.get(key)
+                if (cur === undefined) byDay.set(key, { added: 1, hits: 0 })
+                else cur.added += 1
+              }
+              if (Array.isArray(r.tags)) {
+                tagCells += r.tags.length
+                for (const tg of r.tags) {
+                  if (typeof tg === 'string' && tg !== '') taxonomy.set(tg, (taxonomy.get(tg) ?? 0) + 1)
+                }
+              }
+              if (typeof r.hits === 'number' && r.hits > 0) {
+                totalHits += r.hits
+                hitsCells += 1
+                const key = dayOf(createdAt)
+                const cur = byDay.get(key)
+                if (cur !== undefined) cur.hits += r.hits
+              }
+              if (typeof r.expiresAt === 'number' && r.expiresAt !== 0 && r.expiresAt <= now) expired += 1
+            }
+            const taxonomyList = [...taxonomy.entries()]
+              .map(([tag, count]) => ({ tag, count }))
+              .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+            // 增長趨勢:本地日粒度,覆蓋至多最近 120 天(更早的日不進系列)
+            const growth: Array<{ day: string; added: number; hits: number; total: number }> = []
+            if (newestMs > 0) {
+              const start = new Date()
+              start.setHours(0, 0, 0, 0)
+              let oldestStart = 0
+              if (oldestMs > 0) {
+                const od = new Date(oldestMs)
+                od.setHours(0, 0, 0, 0)
+                oldestStart = od.getTime()
+              }
+              let steps = 0
+              while (steps < 119 && start.getTime() > oldestStart) {
+                start.setDate(start.getDate() - 1)
+                steps += 1
+              }
+              let running = 0
+              const cur = new Date(start)
+              const today = new Date()
+              today.setHours(0, 0, 0, 0)
+              while (cur.getTime() <= today.getTime()) {
+                const key = dayOf(cur.getTime())
+                const d = byDay.get(key)
+                running += d !== undefined ? d.added : 0
+                growth.push({ day: key, added: d !== undefined ? d.added : 0, hits: d !== undefined ? d.hits : 0, total: running })
+                cur.setDate(cur.getDate() + 1)
+              }
+            }
+            // 嵌入/參數健康:經 vectorMemory 服務(本模組與 memory 模組同 ctx)。
+            let memoryHealth: Record<string, unknown> | null = null
+            try {
+              const anyCtx = ctx as unknown as { get?: (name: string) => unknown; vectorMemory?: { stats?: () => Promise<unknown> } }
+              const vm = typeof anyCtx.get === 'function' ? anyCtx.get('vectorMemory') : anyCtx.vectorMemory
+              if (vm !== undefined && vm !== null && typeof (vm as { stats?: unknown }).stats === 'function') {
+                memoryHealth = (await (vm as { stats: () => Promise<unknown> }).stats()) as Record<string, unknown>
+              }
+            } catch {
+              memoryHealth = null
+            }
+            sendJsonTo(res, 200, {
+              ok: true,
+              summary: {
+                total,
+                expired,
+                distinctTags: taxonomyList.length,
+                tagCells,
+                totalHits,
+                hitsCells,
+                oldestDay: oldestMs > 0 ? dayOf(oldestMs) : '',
+                newestDay: newestMs > 0 ? dayOf(newestMs) : '',
+                generatedAt: now,
+              },
+              params: memoryHealth !== null && typeof memoryHealth.params === 'object' ? memoryHealth.params : null,
+              embedding: memoryHealth !== null && typeof memoryHealth.embedding === 'object' ? memoryHealth.embedding : null,
+              taxonomy: taxonomyList,
+              growth,
+            })
+          } catch (e) {
+            sendJsonTo(res, 500, { ok: false, error: String(e && (e as Error).message ? (e as Error).message : e) })
+          }
+        },
+      })
+
       // 全項目觀測一覽
       webServer.register({
         kind: 'exact',

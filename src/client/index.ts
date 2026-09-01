@@ -7,6 +7,8 @@
  * - memory-view      :「記憶」tab(order 30)——四透鏡(卡點/失敗/技術/學習),失敗高亮
  * - insights-views   :「洞察」tab(order 40)+「筆記」tab(order 50)+ 提示詞優化器按鈕
  * - insight-float    :洞察浮窗(shell.overlay FAB + 面板)+ 投影橋接(input.dock)
+ * - memory-settings  :設置頁「記憶數據」(settings.section id=memory-data, order 60)
+ *                      ——記憶分類 / 參數 / 增長趨勢看板
  *
  * Host half 見 src/index.ts。
  */
@@ -14,6 +16,7 @@ import { applyObservabilityView } from './observation-view.ts'
 import { applyMemoryView } from './memory-view.ts'
 import { applyPerspectivesViews } from './insights-views.ts'
 import { applyInsightFloat } from './insight-float.ts'
+import { applyMemorySettings } from './memory-settings.ts'
 
 const name = 'insights-client'
 
@@ -32,6 +35,7 @@ function apply(ctx: ClientCtx): void {
   applyMemoryView(ctx)
   applyPerspectivesViews(ctx)
   applyInsightFloat(ctx)
+  applyMemorySettings(ctx)
 }
 
 export { apply, inject, name }

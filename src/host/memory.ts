@@ -766,5 +766,44 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
       const t = await ensureTable()
       return { records: t.size, ok: openError === '' }
     },
+    /** 記憶數據看板(設置頁「記憶數據」):參數 + 嵌入/向量健康,JSON-safe。 */
+    stats: async () => {
+      const full = config as unknown as { maxRecords?: number; healthIntervalMs?: number; errorAlertThreshold?: number }
+      let embedding: Record<string, unknown> = { enabled: false }
+      if (embCfg.enabled) {
+        let vectors: { total: number; staleFingerprint: number; error?: string } | null = null
+        try {
+          const vt = await ensureVectorTable()
+          let stale = 0
+          for (const [, row] of vt.entries()) {
+            if (row.fp !== currentFp || row.dim !== embCfg.dim) stale += 1
+          }
+          vectors = { total: vt.size, staleFingerprint: stale }
+        } catch (error) {
+          vectors = { total: -1, staleFingerprint: -1, error: String(error) }
+        }
+        embedding = {
+          enabled: true,
+          backend: embCfg.backend,
+          dim: embCfg.dim,
+          fingerprint: currentFp,
+          embedder: getEmbedder() === undefined ? 'missing' : 'available',
+          vectors,
+          queue: { ...queue.stats },
+          recentEvents: queueEvents.slice(-3),
+        }
+      }
+      return {
+        params: {
+          ttlDays: config.ttlDays,
+          maxResults: config.maxResults,
+          maxRecords: typeof full.maxRecords === 'number' ? full.maxRecords : null,
+          healthIntervalMs: typeof full.healthIntervalMs === 'number' ? full.healthIntervalMs : null,
+          errorAlertThreshold: typeof full.errorAlertThreshold === 'number' ? full.errorAlertThreshold : null,
+        },
+        embedding,
+        status: openError === '' ? 'ok' : openError,
+      }
+    },
   })
 }
