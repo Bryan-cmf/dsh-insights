@@ -13,6 +13,7 @@
  * - 寫入走既有 /api/notes(add-note),成功後廣播事件讓筆記視圖即時刷新。
  */
 import { createElement, useEffect, useReducer, type CSSProperties, type ReactNode } from 'react'
+import { selectionMarkdown } from './md-extract.ts'
 
 interface SlotsService {
   inject(key: string, fn: () => unknown): unknown
@@ -74,7 +75,11 @@ function currentSelection(): Pending | null {
     if (inExcluded(range.startContainer) || inExcluded(range.endContainer)) return null
     const rect = range.getBoundingClientRect()
     if (rect.width === 0 && rect.height === 0) return null
-    return { text: text.replace(/\s+$/, ''), x: Math.min(Math.max(80, rect.left + rect.width / 2), window.innerWidth - 80), y: rect.top }
+    // 優先用 DOM 結構重建的 Markdown(表格→GFM、程式碼→圍欄、清單→- …);
+    // 失敗才退回選區純文字(至少不丟內容)
+    const md = selectionMarkdown(range)
+    const payload = md.trim() !== '' ? md : text.replace(/\s+$/, '')
+    return { text: payload, x: Math.min(Math.max(80, rect.left + rect.width / 2), window.innerWidth - 80), y: rect.top }
   } catch {
     return null
   }
