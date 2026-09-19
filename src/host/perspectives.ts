@@ -373,15 +373,17 @@ function foldScan(state: ScanState, event: { type: string; data?: any }): ScanSt
       }
     }
     // ── 存檔計畫:重要性 ≥2、未存過,每回合最多 3 條(純函數,與存檔監聽器一致)──
-    // 只把「深刻的事」寫進記憶(用戶方向):真錯誤 fail*(挫折)/用戶糾正 corr/目標 goal;
-    // 壓縮、無產出、審批拒絕、重試、瞬態等過程噪音不進記憶。
+    // 只把「深刻的事」寫進記憶(用戶方向):用戶糾正 corr(學習)/目標 goal(決策)。
+    // A3(2026-09-19 減法):工具失敗 fail* 不再沉澱成記憶——實測 1,279 條
+    // (全庫 42%)「工具「X」失敗」噪音;掃描洞察仍即時提醒,只是不落盤。
+    // 壓縮、無產出、審批拒絕、重試、瞬態等過程噪音同樣不進記憶。
     let budget = 3
     const savedKeySet = new Set(state.saved.map((s) => s.key))
     const toSave: InsightItem[] = []
     for (const item of next.items) {
       if (budget <= 0) break
       if (item.importance < 2) continue
-      if (!/^(fail|corr|goal)/.test(item.key)) continue
+      if (!/^(corr|goal)/.test(item.key)) continue
       if (savedKeySet.has(item.key)) continue
       savedKeySet.add(item.key)
       toSave.push(item)
@@ -446,12 +448,14 @@ interface ObsState {
   narrative: string
   topic: string
   milestones: Milestone[]
-  suggestedTodos: Array<{ content: string; why: string }>
   insight: string
   turnsSinceInsight: number
-  /** 記憶智能體節奏:每 3 輪從增量 digest 提取長期記憶。 */
+  /** 記憶節奏:合併進觀測呼叫後,每 3 輪在該次呼叫中附帶記憶欄位。 */
   turnsSinceMem: number
+  /** 已成功觀測的回合數。 */
   turnCount: number
+  /** 本 session 見過的 turn/end 次數(含未觀測的),用於 minTurns 門檻。 */
+  turnsSeen: number
   seq: number
   pending: Record<string, { name: string; path: string }>
   digestCap: number
@@ -477,25 +481,39 @@ const OBS_SHARED = [
   '你只輸出 JSON,不輸出其他任何文字。',
   '敘事主線是「進步與成果」:完成了什麼、交付了什麼、往前推進了什麼、學到了什麼。',
   '工具失敗與除錯細節不是敘事重點(觀測頁另有錯誤與統計區塊)——只在其實際影響成果時一句帶過。',
-  '框架攔截類錯誤(沙箱拒絕、審批要求、讀前編輯政策等)與重啟/網絡瞬態錯誤是規則內的正常保護,不是卡點——一律不寫進敘事、里程碑或建議。',
+  '框架攔截類錯誤(沙箱拒絕、審批要求、讀前編輯政策等)與重啟/網絡瞬態錯誤是規則內的正常保護,不是卡點——一律不寫進敘事或里程碑。',
   '事件([cmd]/[write] 等)是成果的證據,不是敘事主體。',
   'JSON 格式:',
   '{',
   '  "narrative": "完整敘事文字",',
   '  "topic": "一句話當前主題/子目標",',
-  '  "milestones": [{"kind":"首次成功|方向轉變|突破|反覆卡點|交付物完成|用戶糾正|目標建立","title":"≤20字","why":"≤60字,為何重要","evidenceSeq":數字}],',
-  '  "suggestedTodos": [{"content":"≤30字,可執行的下一步待辦","why":"≤40字,為什麼該做"}]',
+  '  "milestones": [{"kind":"首次成功|方向轉變|突破|反覆卡點|交付物完成|用戶糾正|目標建立","title":"≤20字","why":"≤60字,為何重要","evidenceSeq":數字}]',
   '}',
-  '規則:只根據提供的內容;沒有真正的里程碑回空陣列;evidenceSeq 引用輸入事件的序號;suggestedTodos 最多 2 條、沒有則空陣列;繁體中文。',
+  '規則:只根據提供的內容;沒有真正的里程碑回空陣列;evidenceSeq 引用輸入事件的序號;繁體中文。',
+].join('\n')
+
+// 記憶欄位規則(2026-09-19 減法 B7:記憶代理合併進觀測呼叫,不再另發一次 LLM;
+// 每 3 輪才在本次呼叫附帶此段,節奏與舊記憶代理一致但零額外呼叫)
+const OBS_MEMORY_RULES = [
+  '【附加欄位——值得長期記住的內容】',
+  '除上述欄位外,再挑出本次內容中值得「長期記住」的 0–2 條:',
+  '  "memories": [{"text":"一句話記憶(≤80字,含關鍵事實/做法/原因)","kind":"挫折|技術|學習|決策"}]',
+  '模塊定義:挫折=踩坑碰壁/失敗教訓/卡點與繞法;技術=有效的方法與發現;學習=領悟、用戶偏好與明確原則;決策=取捨理由、目標確立與轉向。',
+  '政策攔截(沙箱/審批)與瞬態錯誤(重啟/網絡)不值得記;沒有值得記的就回空陣列。',
 ].join('\n')
 
 const OBS_SYSTEM = OBS_SHARED + '\n' + [
   '【增量模式——只回新段落】',
   '你會收到:本回合新內容(歷史摘要流的最新一段)。',
   '只輸出本回合的新段落文字(「## 近期」開頭,聚焦本回合的進步與成果;交付物逐一點名),不要回傳整份敘事。',
-  'JSON 格式:{"section": "本回合新段落文字(≤300字)", "topic": "一句話當前主題", "milestones": [...], "suggestedTodos": [...]}',
-  'milestones/suggestedTodos 規則同上;沒有就空陣列。',
+  'JSON 格式:{"section": "本回合新段落文字(≤300字)", "topic": "一句話當前主題", "milestones": [...]}',
+  'milestones 規則同上;沒有就空陣列。',
 ].join('\n')
+
+/** 增量觀測的 system:wantMemories 時附帶記憶欄位(合併呼叫,不增成本)。 */
+function obsSystem(wantMemories: boolean): string {
+  return wantMemories ? OBS_SYSTEM + '\n' + OBS_MEMORY_RULES : OBS_SYSTEM
+}
 
 const OBS_SYSTEM_REBUILD = OBS_SHARED + '\n' + [
   '【重建模式——分段續寫】',
@@ -532,7 +550,7 @@ const notesSchema = zod.object({
 })
 
 function initObs(): ObsState {
-  return { digest: [], lastObservedIdx: 0, narrative: '', topic: '', milestones: [], suggestedTodos: [], insight: '', turnsSinceInsight: 0, turnsSinceMem: 0, turnCount: 0, seq: 0, pending: {}, digestCap: 120, summary: '', paths: [] }
+  return { digest: [], lastObservedIdx: 0, narrative: '', topic: '', milestones: [], insight: '', turnsSinceInsight: 0, turnsSinceMem: 0, turnCount: 0, turnsSeen: 0, seq: 0, pending: {}, digestCap: 120, summary: '', paths: [] }
 }
 
 function digestPush(state: ObsState, kind: string, text: string): ObsState {
@@ -697,7 +715,7 @@ function parseJsonArrayLoose(raw: string): unknown[] | null {
   try { const v = JSON.parse(sanitizeJsonControlChars(slice)); return Array.isArray(v) ? v : null } catch { return null }
 }
 
-function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+function parseObsJson(raw: string): { narrative: string; topic: string; milestones: Milestone[] } | null {
   const obj = parseJsonLoose(raw)
   if (obj === null) return null
   try {
@@ -714,24 +732,40 @@ function parseObsJson(raw: string): { narrative: string; topic: string; mileston
         why: typeof m.why === 'string' ? m.why.slice(0, 120) : '',
         evidenceSeq: typeof m.evidenceSeq === 'number' ? m.evidenceSeq : 0,
       }))
-    const rawTodos = Array.isArray(obj.suggestedTodos) ? obj.suggestedTodos : []
-    const suggestedTodos = rawTodos
-      .filter((m): m is Record<string, unknown> => m !== null && typeof m === 'object')
-      .filter((m) => typeof m.content === 'string')
-      .slice(0, 2)
-      .map((m) => ({ content: String(m.content).slice(0, 60), why: typeof m.why === 'string' ? m.why.slice(0, 80) : '' }))
     return {
       narrative: obj.narrative.slice(0, 12000),
       topic: typeof obj.topic === 'string' ? obj.topic.slice(0, 100) : '',
       milestones,
-      suggestedTodos,
     }
   } catch {
     return null
   }
 }
 
-export function applyPerspectives(ctx: ProjectionCtx): void {
+/** 解析合併呼叫附帶的 memories 欄位(2026-09-19 減法 B7)。 */
+function parseMemories(obj: Record<string, unknown>): Array<{ text: string; kind: string }> {
+  const raw = Array.isArray(obj.memories) ? obj.memories : []
+  return raw
+    .filter((m): m is Record<string, unknown> => m !== null && typeof m === 'object')
+    .filter((m) => typeof m.text === 'string' && (m.text as string).trim() !== '')
+    .slice(0, 2)
+    .map((m) => ({ text: String(m.text).trim().slice(0, 120), kind: typeof m.kind === 'string' ? m.kind : '' }))
+}
+
+/** 觀測/記憶行為開關(2026-09-19 減法;預設值即減法後的行為)。 */
+export interface PerspectivesConfig {
+  /** 自動洞察(每 5 輪一次 LLM):實測 35 天僅產出 35 條,故預設關閉。 */
+  autoInsight?: boolean
+  /** 只觀測跑過 ≥ 此回合數的 session:實測 96% 觀測來自 1 回合 session,預設 2。 */
+  observeMinTurns?: number
+  /** 記憶欄位附帶節奏(每 N 輪一次,與觀測呼叫合併,零額外 LLM)。 */
+  memEvery?: number
+}
+
+export function applyPerspectives(ctx: ProjectionCtx, cfg: PerspectivesConfig = {}): void {
+  const autoInsight = cfg.autoInsight === true
+  const observeMinTurns = typeof cfg.observeMinTurns === 'number' && cfg.observeMinTurns >= 1 ? Math.floor(cfg.observeMinTurns) : 2
+  const memEvery = typeof cfg.memEvery === 'number' && cfg.memEvery >= 1 ? Math.floor(cfg.memEvery) : 3
   ctx.sessionProjections.register({
     key: 'fileActivity', stateSchema: fileStateSchema,
     init: () => ({ files: {}, pending: {}, recent: [], seq: 0 }),
@@ -791,7 +825,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         tags: [tag, item.kind],
         createdAt: now,
         updatedAt: now,
-        hits: 0,
         expiresAt: now + 90 * 86400000,
       })
       return true
@@ -902,9 +935,9 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           narrative: st.narrative,
           topic: st.topic,
           milestones: st.milestones,
-          suggestedTodos: st.suggestedTodos,
           insight: st.insight,
           turnCount: st.turnCount,
+          turnsSeen: st.turnsSeen,
           summary: st.summary,
           paths: st.paths,
           updatedAt: Date.now(),
@@ -948,8 +981,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           tags: ['里程碑', m.kind],
           createdAt: now,
           updatedAt: now,
-          hits: 0,
-          expiresAt: now + 90 * 86400000,
+            expiresAt: now + 90 * 86400000,
         })
       } catch {
         // 靜默降級
@@ -968,19 +1000,19 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       }
     }
 
-    // 增量模式的段落解析:{"section": "...", "topic": "...", "milestones": [...], "suggestedTodos": [...]}
-    // 增量只要求 section 存在;里程碑/待辦解析失敗不連坐(寬鬆解析)。
-    function parseChunkJson(raw: string): { section: string; topic: string; milestones: Milestone[]; suggestedTodos: Array<{ content: string; why: string }> } | null {
+    // 增量模式的段落解析:{"section": "...", "topic": "...", "milestones": [...], ("memories": [...])}
+    // 增量只要求 section 存在;里程碑/記憶解析失敗不連坐(寬鬆解析)。
+    function parseChunkJson(raw: string): { section: string; topic: string; milestones: Milestone[]; memories: Array<{ text: string; kind: string }> } | null {
       const obj = parseJsonLoose(raw)
       if (obj === null) return null
       const section = typeof obj.section === 'string' ? obj.section : (typeof obj.narrative === 'string' ? obj.narrative : '')
       if (section === '') return null
-      const parsed = parseObsJson(raw) // 里程碑/待辦(narrative 缺失不影響此處回傳)
+      const parsed = parseObsJson(raw) // 里程碑(narrative 缺失不影響此處回傳)
       return {
         section: section.slice(0, 1200),
         topic: parsed !== null ? parsed.topic : (typeof obj.topic === 'string' ? (obj.topic as string).slice(0, 100) : ''),
         milestones: parsed !== null ? parsed.milestones : [],
-        suggestedTodos: parsed !== null ? parsed.suggestedTodos : [],
+        memories: parseMemories(obj),
       }
     }
 
@@ -1031,43 +1063,61 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     }
 
     // 增量觀測(每輪):模型只回本回合新段落,host 拼接與裁剪
+    /** 取當前存活狀態物件:await 之後務必用它回寫,不可寫在捕獲的舊物件上。 */
+    function liveState(sessionId: string, fallback: ObsState): ObsState {
+      const live = obsStates.get(sessionId)
+      return live !== undefined ? live : fallback
+    }
+
     async function observeTurn(sessionId: string, st: ObsState): Promise<void> {
       const newItems = st.digest.slice(st.lastObservedIdx)
       if (newItems.length === 0) return
       const meaningful = newItems.some((i) => i.kind === 'user' || i.kind === 'assistant' || i.kind === 'fail' || i.kind === 'write' || i.kind === 'goal' || i.kind === 'cmd')
       if (!meaningful) return
       const input = newItems.slice(-14).map((i) => `#${i.seq} [${i.kind}] ${i.text}`).join('\n')
+      // B7:記憶欄位每 3 輪附帶一次(與舊記憶代理同節奏,但共用本次呼叫 → 零額外 LLM)
+      const wantMemories = st.turnsSinceMem + 1 >= memEvery
       const prompt = ['【本回合新內容】', input].join('\n')
-      const raw = await callObsLlm(sessionId, OBS_SYSTEM, prompt)
+      const raw = await callObsLlm(sessionId, obsSystem(wantMemories), prompt)
       if (raw === '') {
         console.error('[observation] 增量輸出為空(模型無輸出),session', sessionId)
         return
       }
       const parsed = parseChunkJson(raw)
       if (parsed === null) {
-        // 兜底打撈:JSON 全毀時至少取出 section 文本,敘事不中斷(里程碑/待辦本輪放棄)
+        // 兜底打撈:JSON 全毀時至少取出 section 文本,敘事不中斷(里程碑/記憶本輪放棄)
         const m = /"section"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/.exec(raw)
         const salvaged = m && typeof m[1] === 'string'
           ? m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
           : ''
         if (salvaged.length >= 40) {
           console.error('[observation] 增量 JSON 毀損,打撈 section(' + salvaged.length + ' 字),session', sessionId)
-          st.narrative = appendSection(st.narrative, salvaged.slice(0, 1200))
-          st.turnCount += 1
-          st.lastObservedIdx = st.digest.length
-          await persistObs(sessionId, st)
+          const cur = liveState(sessionId, st)
+          cur.narrative = appendSection(cur.narrative, salvaged.slice(0, 1200))
+          cur.turnCount += 1
+          cur.lastObservedIdx = Math.max(cur.lastObservedIdx, st.digest.length)
+          await persistObs(sessionId, cur)
           return
         }
         console.error('[observation] 增量輸出無法解析 JSON,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200), 'raw 尾:', raw.slice(-120))
         return
       }
-      st.narrative = appendSection(st.narrative, parsed.section)
-      if (parsed.topic !== '') st.topic = parsed.topic
-      if (parsed.milestones.length > 0) st.milestones = mergeMilestones(sessionId, st, parsed.milestones)
-      if (parsed.suggestedTodos.length > 0) st.suggestedTodos = parsed.suggestedTodos
-      st.turnCount += 1
-      st.lastObservedIdx = st.digest.length
-      await persistObs(sessionId, st)
+      // 回寫到「當前存活物件」:await 期間新事件會以不可變 spread 產生新物件,
+      // 寫在捕獲的 st 上等於丟失(實測症狀:turnCount/turnsSinceMem 被重置,記憶節奏延後)。
+      const cur = liveState(sessionId, st)
+      cur.narrative = appendSection(cur.narrative, parsed.section)
+      if (parsed.topic !== '') cur.topic = parsed.topic
+      if (parsed.milestones.length > 0) cur.milestones = mergeMilestones(sessionId, cur, parsed.milestones)
+      cur.turnCount += 1
+      // 只把「本次實際餵給模型」的窗口標記為已觀測;之後到達的事件留給下一輪
+      cur.lastObservedIdx = Math.max(cur.lastObservedIdx, st.digest.length)
+      // B7:同一次呼叫的記憶欄位落地(僅在附帶該欄位的那一輪)
+      if (wantMemories) cur.turnsSinceMem = 0
+      else cur.turnsSinceMem += 1
+      await persistObs(sessionId, cur)
+      if (wantMemories && parsed.memories.length > 0) {
+        for (const mem of parsed.memories) await saveAgentMemory(sessionId, mem.text, mem.kind)
+      }
     }
 
     // 重建觀測(手動/初始化):大段續寫,全過程覆蓋,交付物逐一點名。
@@ -1103,7 +1153,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         st.narrative = parsed.narrative
         if (parsed.topic !== '') st.topic = parsed.topic
         if (parsed.milestones.length > 0) st.milestones = mergeMilestones(sessionId, st, parsed.milestones)
-        if (parsed.suggestedTodos.length > 0) st.suggestedTodos = parsed.suggestedTodos
       }
       // 資料保護:全部段落失敗時不 persist、不動 turnCount——
       // 空狀態覆寫掉好敘事的事故已發生過一次(2026-08-17,用戶回報)
@@ -1150,21 +1199,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
     // ── 記憶智能體:每 3 輪從近期軌跡提煉長期記憶,LLM 理解後歸入模塊 ──
     // (用戶方向:記憶也該是智能體——跟踪掃描軌跡與對話,分類進記憶的不同模塊;
     //  取代記憶頁原本的 regex 死分類。複用觀測 digest 流,不另起折疊。)
-    const MEMORY_AGENT_SYSTEM = [
-      '你是「記憶官」——從研發 session 的軌跡與對話中,挑出值得長期記住的內容。',
-      '只輸出 JSON 數組,不輸出其他任何文字:',
-      '[{"text":"一句話記憶(≤80字,含關鍵事實/做法/原因)","kind":"挫折|技術|學習|決策"}]',
-      '模塊定義(像人腦:記住挫折或深刻的事;技術的沉澱與發現):',
-      '- 挫折:踩坑碰壁、失敗教訓、卡點與繞法(什麼做法失敗了、以後怎麼避免)',
-      '- 技術:技術沉澱與技術發現——有效的方法、模式、指令、寫法',
-      '- 學習:領悟、用戶偏好、用戶明確表達的原則',
-      '- 決策:為什麼這麼選(取捨理由)、目標的確立與轉向',
-      '規則:',
-      '1. 政策攔截(沙箱/審批)與瞬態錯誤(重啟/網絡)是規則內事件,不值得記。',
-      '2. 不要重複「已有記憶」裡的內容。',
-      '3. 沒有值得記的就回空數組;至多 3 條;繁體中文。',
-    ].join('\n')
-
     async function saveAgentMemory(sid: string, text: string, kind: string): Promise<void> {
       try {
         const t = await ensureTable()
@@ -1181,75 +1215,10 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
           tags: ['智能記憶', k],
           createdAt: now,
           updatedAt: now,
-          hits: 0,
-          expiresAt: now + 90 * 86400000,
+            expiresAt: now + 90 * 86400000,
         })
       } catch {
         // 靜默降級
-      }
-    }
-
-    async function extractMemories(sessionId: string, st: ObsState): Promise<void> {
-      const recent = st.digest.slice(-30)
-      const meaningful = recent.filter((i) => i.kind !== 'mech')
-      if (meaningful.length < 3) {
-        st.turnsSinceMem = 0
-        return
-      }
-      // 列出近期記憶避免重複提取
-      let existing = ''
-      try {
-        const t = await ensureTable()
-        const entriesFn = t ? (t as unknown as { entries?: () => Iterable<[string, unknown]> }).entries : undefined
-        if (typeof entriesFn === 'function') {
-          const rows: string[] = []
-          for (const [, rec] of entriesFn.call(t)) {
-            const r = rec as { content?: string }
-            if (r && typeof r.content === 'string') rows.push(r.content.slice(0, 60))
-          }
-          existing = rows.slice(-15).join('\n')
-        }
-      } catch {
-        // 拿不到清單也照常提取
-      }
-      const input = meaningful.map((i) => `#${i.seq} [${i.kind}] ${i.text}`).join('\n')
-      const prompt = `【近期軌跡與對話】\n${input}\n【已有記憶(不要重複)】\n${existing || '(無)'}`
-      let raw = ''
-      try {
-        for await (const chunk of llmRef.stream({
-          provider: 'deepseek-official',
-          model: 'deepseek-v4-flash',
-          reasoningEffort: 'high',
-          system: MEMORY_AGENT_SYSTEM,
-          messages: [{ id: 'mem-q-1', role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }],
-          temperature: 0.2,
-        })) {
-          if (chunk.type === 'text-delta' && typeof chunk.text === 'string') raw += chunk.text
-        }
-      } catch (e) {
-        console.error('[memory-agent] llm 呼叫失敗', sessionId, String(e && (e as Error).message ? (e as Error).message : e))
-        return
-      }
-      st.turnsSinceMem = 0
-      if (raw.trim() === '') {
-        console.error('[memory-agent] 輸出為空', sessionId)
-        return
-      }
-      const arr = parseJsonArrayLoose(raw)
-      if (arr === null) {
-        console.error('[memory-agent] 輸出無法解析,session', sessionId, 'raw 長度:', raw.length, 'raw 頭:', raw.slice(0, 200), 'raw 尾:', raw.slice(-120))
-        return
-      }
-      try {
-        const items = arr
-          .filter((it): it is Record<string, unknown> => it !== null && typeof it === 'object')
-          .filter((it) => typeof it.text === 'string' && (it.text as string).trim() !== '')
-          .slice(0, 3)
-        for (const it of items) {
-          await saveAgentMemory(sessionId, (it.text as string).trim().slice(0, 120), typeof it.kind === 'string' ? it.kind : '')
-        }
-      } catch {
-        console.error('[memory-agent] JSON 解析失敗', sessionId)
       }
     }
 
@@ -1285,19 +1254,47 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
         try {
           const stored = await readObs(sid)
           if (stored && typeof stored === 'object') {
-            const s = stored as { narrative?: unknown; topic?: unknown; milestones?: unknown; turnCount?: unknown; summary?: unknown; paths?: unknown }
+            const s = stored as { narrative?: unknown; topic?: unknown; milestones?: unknown; turnCount?: unknown; turnsSeen?: unknown; summary?: unknown; paths?: unknown }
             if (typeof s.narrative === 'string') st.narrative = s.narrative
             if (typeof s.topic === 'string') st.topic = s.topic
             if (Array.isArray(s.milestones)) st.milestones = s.milestones as Milestone[]
             if (typeof s.turnCount === 'number') st.turnCount = s.turnCount
+            // 已存在觀測的 session 視為已跨過回合門檻(舊資料沒有 turnsSeen 欄位)
+            if (typeof s.turnsSeen === 'number') st.turnsSeen = s.turnsSeen
+            else if (st.turnCount > 0) st.turnsSeen = observeMinTurns
             if (typeof s.summary === 'string') st.summary = s.summary
             if (Array.isArray(s.paths)) st.paths = s.paths as PathRecord[]
           }
           if (st.narrative !== '') return // 已有敘事(恢復成功),不需初始化
           if (sessionQuery === undefined) return
+          // A2 延伸(2026-09-19):尚未跨過觀察門檻的新 session 不做歷史回放與初始編年史。
+          // 舊行為對每個 session 首次事件都發一次初始編年史 LLM;實測 96% 的 session
+          // 只跑 1 回合,等於白燒一次呼叫。跨過門檻後由增量觀測接續(門檻前的事件
+          // 已在 live digest 中累積,不會丟內容)。
+          if (st.turnsSeen < observeMinTurns) return
           st.digestCap = 3000 // 初始化/重建:全過程覆蓋,不丟早期成果
-          st = await foldSessionDigest(sid, st)
-          obsStates.set(sid, st)
+          // 回放歷史(可能耗時:數千事件,每 2000 條讓出事件迴圈)
+          const replayed = await foldSessionDigest(sid, st)
+          // 競態修復(2026-09-19):回放期間到達的即時事件已把「新物件」寫進 obsStates
+          // (foldDigest 是不可變的,每次 push 都 spread 出新物件)。若此處用回放時持有的
+          // 舊物件 set 回去,會把那一段即時事件整批丟掉——實測症狀:turnsSeen/turnCount
+          // 被重置、門檻永遠差一拍、digest 少一條。改為把回放歷史併進「當前存活物件」,
+          // 絕不以舊物件覆寫。
+          const live = obsStates.get(sid)
+          if (live !== undefined && live !== replayed) {
+            const cap = live.digestCap > 0 ? live.digestCap : 120
+            const base = replayed.seq
+            // 存活物件的 seq 從 0 起算 → 平移到回放序號之後,保持單調
+            const shifted = live.digest.map((it) => ({ ...it, seq: it.seq + base }))
+            const merged = [...replayed.digest, ...shifted]
+            live.digest = merged.length > cap ? merged.slice(-cap) : merged
+            live.seq = base + live.seq
+            live.lastObservedIdx = 0 // 回放內容尚未觀測:從頭觀測(rebuild 會覆蓋成完整敘事)
+            st = live
+          } else {
+            obsStates.set(sid, replayed)
+            st = replayed
+          }
           await rebuildChronicle(sid, st)
         } catch {
           // 初始化失敗靜默:後續回合的增量觀測照常進行
@@ -1323,14 +1320,16 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
       st = foldDigest(st, event)
       obsStates.set(sid, st)
       if (event.type === 'turn/end') {
-        // 觀測敘事:每輪增量更新
+        st.turnsSeen += 1
+        // A2(2026-09-19 減法):只觀測跑過 ≥ observeMinTurns 回合的 session——
+        // 實測 96% 的觀測記錄來自只跑 1 回合的 session(非互動式一次性任務),
+        // 對它們生成編年史既無人閱讀又白燒 LLM。
+        if (st.turnsSeen < observeMinTurns) return
+        // 觀測敘事:每輪增量更新(記憶欄位已合併進同一呼叫,見 observeTurn)
         void observeTurn(sid, st).then(() => {
-          // 自動洞察:每 5 輪觸發一次(基於最新敘事)
+          // 自動洞察:A1 起預設關閉(35 天僅產出 35 條);需要時以 config.autoInsight=true 開回
           st.turnsSinceInsight += 1
-          if (st.turnsSinceInsight >= 5) void generateInsight(sid, st)
-          // 記憶智能體:每 3 輪從近期軌跡提煉長期記憶歸入模塊
-          st.turnsSinceMem += 1
-          if (st.turnsSinceMem >= 3) void extractMemories(sid, st)
+          if (autoInsight && st.turnsSinceInsight >= 5) void generateInsight(sid, st)
         })
       }
     })
@@ -1525,16 +1524,14 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
             }
             const now = Date.now()
             const taxonomy = new Map<string, number>()
-            const byDay = new Map<string, { added: number; hits: number }>()
+            const byDay = new Map<string, { added: number }>()
             let total = 0
-            let totalHits = 0
-            let hitsCells = 0
             let tagCells = 0
             let expired = 0
             let oldestMs = 0
             let newestMs = 0
             for (const [, row] of entriesFn.call(t)) {
-              const r = row as { content?: unknown; tags?: unknown; createdAt?: unknown; expiresAt?: unknown; hits?: unknown }
+              const r = row as { content?: unknown; tags?: unknown; createdAt?: unknown; expiresAt?: unknown }
               if (!r || typeof r !== 'object' || typeof r.content !== 'string') continue
               total += 1
               const createdAt = typeof r.createdAt === 'number' ? r.createdAt : 0
@@ -1543,7 +1540,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
                 if (createdAt > newestMs) newestMs = createdAt
                 const key = dayOf(createdAt)
                 const cur = byDay.get(key)
-                if (cur === undefined) byDay.set(key, { added: 1, hits: 0 })
+                if (cur === undefined) byDay.set(key, { added: 1 })
                 else cur.added += 1
               }
               if (Array.isArray(r.tags)) {
@@ -1552,20 +1549,13 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
                   if (typeof tg === 'string' && tg !== '') taxonomy.set(tg, (taxonomy.get(tg) ?? 0) + 1)
                 }
               }
-              if (typeof r.hits === 'number' && r.hits > 0) {
-                totalHits += r.hits
-                hitsCells += 1
-                const key = dayOf(createdAt)
-                const cur = byDay.get(key)
-                if (cur !== undefined) cur.hits += r.hits
-              }
               if (typeof r.expiresAt === 'number' && r.expiresAt !== 0 && r.expiresAt <= now) expired += 1
             }
             const taxonomyList = [...taxonomy.entries()]
               .map(([tag, count]) => ({ tag, count }))
               .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
             // 增長趨勢:本地日粒度,覆蓋至多最近 120 天(更早的日不進系列)
-            const growth: Array<{ day: string; added: number; hits: number; total: number }> = []
+            const growth: Array<{ day: string; added: number; total: number }> = []
             if (newestMs > 0) {
               const start = new Date()
               start.setHours(0, 0, 0, 0)
@@ -1588,7 +1578,7 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
                 const key = dayOf(cur.getTime())
                 const d = byDay.get(key)
                 running += d !== undefined ? d.added : 0
-                growth.push({ day: key, added: d !== undefined ? d.added : 0, hits: d !== undefined ? d.hits : 0, total: running })
+                growth.push({ day: key, added: d !== undefined ? d.added : 0, total: running })
                 cur.setDate(cur.getDate() + 1)
               }
             }
@@ -1610,8 +1600,6 @@ export function applyPerspectives(ctx: ProjectionCtx): void {
                 expired,
                 distinctTags: taxonomyList.length,
                 tagCells,
-                totalHits,
-                hitsCells,
                 oldestDay: oldestMs > 0 ? dayOf(oldestMs) : '',
                 newestDay: newestMs > 0 ? dayOf(newestMs) : '',
                 generatedAt: now,

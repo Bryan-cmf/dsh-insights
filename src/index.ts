@@ -23,7 +23,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { applyInfra } from './host/infra.ts'
 import { applyMemory } from './host/memory.ts'
 import { applyPerspectives, type ProjectionCtx } from './host/perspectives.ts'
-import { applyInsightChat, type InsightCtx } from './host/insight.ts'
 
 const name = 'insights'
 
@@ -38,6 +37,12 @@ const Config = z.object({
   ttlDays: z.number().min(0).max(3650).default(90),
   /** Default result count for mem_search (memory). */
   maxResults: z.number().min(1).max(100).default(10),
+  /** 自動洞察(每 5 輪一次 LLM 呼叫):實測 35 天僅 35 條,預設關閉 (observability). */
+  autoInsight: z.boolean().default(false),
+  /** 只觀測跑過 ≥ 此回合數的 session;1 = 舊行為(每回合都觀測) (observability). */
+  observeMinTurns: z.number().min(1).max(50).default(2),
+  /** 記憶欄位附帶節奏(每 N 輪,合併進觀測呼叫) (memory). */
+  memEvery: z.number().min(1).max(50).default(3),
 })
 
 interface ConfigType {
@@ -46,6 +51,9 @@ interface ConfigType {
   errorAlertThreshold: number
   ttlDays: number
   maxResults: number
+  autoInsight: boolean
+  observeMinTurns: number
+  memEvery: number
 }
 
 // 四模組注入的聯集;全部服務在 web profile 中均由宿主提供。
@@ -54,10 +62,13 @@ const inject = ['tools', 'timer', 'skills', 'storageDomain', 'sessionProjections
 function apply(ctx: Context, config: ConfigType): void {
   applyInfra(ctx, config)
   applyMemory(ctx, config)
-  // perspectives/insight 模組以結構化最小介面定義所需服務;
+  // perspectives 模組以結構化最小介面定義所需服務;
   // 入口 inject 已保證全部存在,直接轉型。
-  applyPerspectives(ctx as unknown as ProjectionCtx)
-  applyInsightChat(ctx as unknown as InsightCtx)
+  applyPerspectives(ctx as unknown as ProjectionCtx, {
+    autoInsight: config.autoInsight,
+    observeMinTurns: config.observeMinTurns,
+    memEvery: config.memEvery,
+  })
 }
 
 export { Config, apply, inject, name }

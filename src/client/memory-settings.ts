@@ -29,8 +29,6 @@ interface StatsPayload {
     expired: number
     distinctTags: number
     tagCells: number
-    totalHits: number
-    hitsCells: number
     oldestDay: string
     newestDay: string
     generatedAt: number
@@ -53,7 +51,7 @@ interface StatsPayload {
     recentEvents?: Array<{ kind: string; detail: Record<string, unknown>; at: number }>
   } | null
   taxonomy?: Array<{ tag: string; count: number }>
-  growth?: Array<{ day: string; added: number; hits: number; total: number }>
+  growth?: Array<{ day: string; added: number; total: number }>
 }
 
 // ── 靜態樣式(與 memory-view 同視覺語言)─────────────────────────────────────

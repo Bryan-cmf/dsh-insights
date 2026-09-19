@@ -28,7 +28,6 @@ export const memorySchema = zod.object({
   tags: zod.array(zod.string()),
   createdAt: zod.number(),
   updatedAt: zod.number(),
-  hits: zod.number(),
   expiresAt: zod.number(),
   /** v0.10.0:寫入方 session id(記憶頁嚴格隔離;舊記錄無此欄位仍相容)。 */
   sid: zod.string().optional(),
@@ -71,22 +70,11 @@ export const obsSchema = zod.object({
 })
 
 /** 洞察對話歷史域:per-session 一份對話線,滾動保留最近 50 條。 */
-export const insightChatSchema = zod.object({
-  sessionId: zod.string(),
-  messages: zod.array(zod.object({
-    role: zod.string(),
-    text: zod.string(),
-    thinking: zod.string().optional(),
-    at: zod.number(),
-  })),
-  updatedAt: zod.number(),
-})
 
 // ── 單例 openers(失敗時清除 memo,允許下次呼叫重試)─────────────────────────
 
 let vectorMemoryDomain: Promise<DomainLike> | undefined
 let observationDomain: Promise<DomainLike> | undefined
-let insightChatDomain: Promise<DomainLike> | undefined
 
 /**
  * 測試專用:清除域單例 memo,讓每個測試場景拿到全新 open。
@@ -95,7 +83,6 @@ let insightChatDomain: Promise<DomainLike> | undefined
 export function resetDomainSingletonsForTest(): void {
   vectorMemoryDomain = undefined
   observationDomain = undefined
-  insightChatDomain = undefined
 }
 
 export function openVectorMemoryDomain(sd: StorageDomainLike): Promise<DomainLike> {
@@ -124,11 +111,3 @@ export function openObservationDomain(sd: StorageDomainLike): Promise<DomainLike
   return observationDomain
 }
 
-export function openInsightChatDomain(sd: StorageDomainLike): Promise<DomainLike> {
-  if (insightChatDomain === undefined) {
-    const p = sd.open({ name: 'insight_chat', version: 1, tables: { chats: domainTable(insightChatSchema) } })
-    insightChatDomain = p
-    p.catch(() => { if (insightChatDomain === p) insightChatDomain = undefined })
-  }
-  return insightChatDomain
-}

@@ -19,18 +19,17 @@ Conversation → trajectory → observation (narrative & milestones) → insight
 
 | Agent | Responsibility |
 |---|---|
-| **Observation agent** | digest folding → incremental LLM observation on `turn/end` (deepseek-v4-flash) → rolling narrative / themes / milestones / suggested todos, persisted in the `observation` domain; a manual "re-observe" rewrites the full history in segments; a total failure never overwrites a good narrative (data protection) |
-| **Insight agent** | floating chat at the bottom-right (deep-thinking max, expandable reasoning, coherent chat history), entirely in service of value / potential paths / direction; 【Suggest】 pushes an idea into the main composer in one click; concurrency gate (2 concurrent + FIFO + 60s timeout → 429) |
-| **Memory agent** | every 3 turns, distills long-term memory from the recent trajectory; the LLM files it into modules: **setbacks / techniques / learning / decisions** (like a human brain: remember failures and profound events, technical sediment and discoveries); dedupes against recent memories |
+| **Observation agent** | digest folding → incremental LLM observation on `turn/end` (deepseek-v4-flash) → rolling narrative / themes / milestones, persisted in the `observation` domain. Since v0.12.0 it only observes sessions that reached **≥ 2 turns** (measured: 96% of records came from single-turn sessions) and the memory field rides along in the same call every 3rd turn — one LLM call per observed turn, no separate memory agent. A manual "re-observe" rewrites the full history in segments; a total failure never overwrites a good narrative (data protection) |
+| **Memory agent** | folded into the observation call since v0.12.0 (every 3rd observed turn) — the LLM files long-term memory into modules: **setbacks / techniques / learning / decisions** (like a human brain: remember failures and profound events, technical sediment and discoveries); dedupes against recent memories. Tool failures no longer sediment into memory (measured: 42% of all rows were 「tool X failed」 noise) — the scan view still surfaces them live |
 
 ## The four views (conversation view ring)
 
 - **Observation** (order 20) — text-first: observation narrative / milestones and a whole-project overview on top; overview stats, file activity, mechanism events, tool/skill TOP, recent executions sink to the bottom
 - **Memory** (order 30) — smart memory modules, **strictly isolated per session** (no other session's rows mix in — since v0.10.0; `mem_save` rows are stamped with the calling session id; the legacy "aggregate by cwd" behaviour remains reachable via `?scope=project` on `/api/memories`) + four lenses over memory activity
-- **Insights** (order 40) — value anchors (goals / tasks), auto insight cards (every 5 turns), value summary cards, a **direction-evolution** timeline, and a **potential-paths** generator (adoptable as todos or pushed to the composer); generated artifacts persist across page switches
-- **Notes** (order 50) — handwritten todos / notes + one-click adoption of observation-suggested todos, auto-refreshed at turn end
+- **Insights** (order 40) — value anchors (goals / tasks), value summary cards, a **direction-evolution** timeline, and a **potential-paths** generator (adoptable as todos or pushed to the composer); generated artifacts persist across page switches. Auto insight (a periodic LLM call every 5 turns) is **off by default** since v0.12.0 — measured at 35 outputs in 35 days — and can be re-enabled with `autoInsight: true`
+- **Notes** (order 50) — handwritten todos and **Markdown-rendered notes** (a multi-line composer, Enter to submit / Shift+Enter for a newline), auto-refreshed at turn end. Select any text in the conversation and a 「＋ Add to notes」 button appears next to the selection — one click files it into the current session's notes
 
-**Extras** — a prompt optimizer (the composer's 「Optimize」 button), an insight FAB (readable in night mode, draggable anywhere), a **resizable insight panel** (drag the right / bottom / corner edges; size survives refresh), and first-class **Markdown rendering** everywhere prose is shown (observation narrative, memory modules, auto-insight, value summary, insight chat) via the same `MarkdownText` pipeline the main conversation uses.
+**Extras** — a prompt optimizer (the composer's 「Optimize」 button), **select-to-note** (dark-mode-safe floating button, touch-friendly, Escape to dismiss), and first-class **Markdown rendering** everywhere prose is shown (observation narrative, memory modules, notes, auto-insight, value summary) via the same `MarkdownText` pipeline the main conversation uses.
 
 ## Error taxonomy
 
@@ -71,6 +70,8 @@ Source layout: host entry `src/index.ts` (merged Config + union of injects); fea
 
 | Version | Highlights |
 |---|---|
+| v0.12.0 | **Subtraction release** (evidence-driven, 35-day usage review): auto insight off by default; observation only for sessions ≥ 2 turns (also gated before the initial chronicle, killing ~2.7k wasted calls per 35 days); memory field merged into the observation call (no separate memory agent); tool failures no longer written to memory (1,279 noise rows eliminated); `hits` dead field and `suggestedTodos` generation removed; insight FAB (used 4 times in 35 days) and the `/api/insight/chat` route removed; **notes now render Markdown** with a multi-line composer; new **select-to-note** button. Also fixed a state race: session replay could overwrite live fold state, resetting turn counters |
+| v0.11.0 | Settings page 「memory data」 dashboard — taxonomy / params / growth trend via `/api/memory/stats` |
 | v0.10.1 | Mobile fix: FAB / panel head / resize handles now use Pointer Events + `touch-action: none` — dragging works with touch instead of being treated as page scroll |
 | v0.10.0 | Strict per-session memory isolation; native Markdown rendering via the official `MarkdownText` pipeline; resizable insight panel |
 | v0.9.0 | Draggable insight FAB (position persisted) |

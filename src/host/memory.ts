@@ -79,7 +79,6 @@ interface MemoryRecord {
   tags: string[]
   createdAt: number
   updatedAt: number
-  hits: number
   /** 0 = never expires. */
   expiresAt: number
   /** 寫入此記憶的 session id(mem_save 工具擷取自執行上下文;供記憶頁嚴格隔離)。 */
@@ -522,7 +521,6 @@ export function applyMemory(ctx: Context, config: MemoryConfig): void {
       tags,
       createdAt: now,
       updatedAt: now,
-      hits: 0,
       expiresAt: ttlDays > 0 ? now + ttlDays * 86400000 : 0,
       ...(typeof sid === 'string' && sid !== '' ? { sid } : {}),
     }

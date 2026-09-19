@@ -41,6 +41,10 @@ const sendBtnSmall: CSSProperties = { borderRadius: 8, border: '1px solid var(--
 const actionBtn: CSSProperties = { fontSize: 11, border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', padding: '2px 8px', cursor: 'pointer', marginTop: 6 }
 const textInput: CSSProperties = { flex: 1, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', padding: '6px 9px', fontSize: 12, fontFamily: 'inherit' }
 const emptyText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.6 }
+/** 筆記卡片:Markdown 正文 + 刪除鈕(支援多行/程式碼區塊,故用 flex-start 對齊)。 */
+const noteCard: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--dsw-alias-border-l1)' }
+/** 筆記輸入框:多行,Enter 送出 / Shift+Enter 換行。 */
+const noteArea: CSSProperties = { width: '100%', resize: 'vertical', minHeight: 44, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', padding: '8px 10px', fontSize: 12, lineHeight: 1.6, fontFamily: 'inherit', boxSizing: 'border-box' }
 
 const KIND_META: Record<string, { label: string; color: CSSProperties; badge: CSSProperties }> = {
   risk: {
@@ -327,11 +331,9 @@ interface NotesPayload { notes?: NoteItem[]; todos?: TodoItem[] }
 function NotesView(props: ViewProps): ReactNode {
   const sid = typeof props.sessionId === 'string' ? props.sessionId : ''
   const [data, setData] = useState<NotesPayload | null>(null)
-  const [suggested, setSuggested] = useState<Array<{ content: string; why: string }>>([])
   const [noteText, setNoteText] = useState('')
   const [todoText, setTodoText] = useState('')
-  // 自動刷新(P2-12):觀測建議待辦在 turn/end 更新——用回合數投影做精確觸發,
-  // 30s 計時輪詢兜底(投影缺席或無機制事件的 session 仍會刷新)。
+  // 自動刷新(P2-12):以回合數投影精確觸發,30s 計時輪詢兜底。
   const infra = props.useProjection ? (props.useProjection('infraView') as any) : undefined
   const turnsEnded: number = infra && infra.turns && typeof infra.turns.ended === 'number' ? infra.turns.ended : 0
 
@@ -341,18 +343,18 @@ function NotesView(props: ViewProps): ReactNode {
       .then((r) => r.json())
       .then((d: NotesPayload) => setData(d))
       .catch(() => { /* 靜默 */ })
-    fetch(`/api/observation?sessionId=${encodeURIComponent(sid)}`)
-      .then((r) => r.json())
-      .then((d: { suggestedTodos?: Array<{ content: string; why: string }> }) => {
-        setSuggested(Array.isArray(d.suggestedTodos) ? d.suggestedTodos : [])
-      })
-      .catch(() => { /* 靜默 */ })
   }
   useEffect(() => { refresh() }, [sid, turnsEnded])
   useEffect(() => {
     if (sid === '') return
     const timer = setInterval(() => refresh(), 30000)
     return () => clearInterval(timer)
+  }, [sid])
+  // 對話頁「加到筆記」寫入後廣播,本視圖即時刷新
+  useEffect(() => {
+    const onAdded = (): void => refresh()
+    window.addEventListener('dsh-insights:note-added', onAdded)
+    return () => window.removeEventListener('dsh-insights:note-added', onAdded)
   }, [sid])
 
   async function post(action: string, payload: Record<string, unknown>): Promise<void> {
@@ -372,8 +374,6 @@ function NotesView(props: ViewProps): ReactNode {
 
   const todos = data && Array.isArray(data.todos) ? data.todos : []
   const notes = data && Array.isArray(data.notes) ? data.notes : []
-  const adopted = new Set(todos.map((t) => t.content))
-  const pendingSuggested = suggested.filter((s) => !adopted.has(s.content))
 
   const todoRows = todos.slice().reverse().map((t) =>
     createElement('div', { key: String(t.seq), style: row },
@@ -386,25 +386,46 @@ function NotesView(props: ViewProps): ReactNode {
       t.source === 'auto' ? createElement('span', { style: badge }, '自動') : null,
       createElement('span', { style: { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', flex: 'none' }, title: '刪除', onClick: () => void post('delete-todo', { seq: t.seq }) }, '✕')))
 
+  // 筆記正文:原生 Markdown 渲染(與記憶頁/洞察頁同一管線)
   const noteRows = notes.slice().reverse().map((n) =>
-    createElement('div', { key: String(n.seq), style: row },
-      createElement('span', { style: { flex: 1, minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, n.text),
+    createElement('div', { key: String(n.seq), style: noteCard },
+      createElement('div', { style: { flex: 1, minWidth: 0 } }, createElement(Md, { text: n.text })),
       createElement('span', { style: { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', flex: 'none' }, title: '刪除', onClick: () => void post('delete-note', { seq: n.seq }) }, '✕')))
 
+  // 輸入區:多行 textarea,Enter 送出 / Shift+Enter 換行;粘貼保留原始排版
+  function NoteComposer(): ReactNode {
+    return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 } },
+      createElement('textarea', {
+        style: noteArea,
+        placeholder: '寫一條筆記…支援 Markdown;Enter 送出,Shift+Enter 換行。粘貼長文也沒問題。',
+        value: noteText,
+        rows: noteText === '' ? 2 : Math.min(12, noteText.split('\n').length + 1),
+        onChange: (e: { target: { value: string } }) => setNoteText(e.target.value),
+        onKeyDown: (e: { key: string; shiftKey: boolean; preventDefault: () => void }) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            submitNote()
+          }
+        },
+      }),
+      createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+        createElement('button', { style: sendBtnSmall, onClick: submitNote, disabled: noteText.trim() === '' }, '新增筆記'),
+        noteText.trim() !== '' ? createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } }, `${noteText.length} 字`) : null,
+        createElement('span', { style: { flex: 1 } }),
+        createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' } }, '提示:在對話中選取文字,會浮出「加到筆記」')))
+  }
+
+  function submitNote(): void {
+    const text = noteText.trim()
+    if (text === '') return
+    void post('add-note', { text })
+    setNoteText('')
+  }
+
   return createElement('div', { style: page },
-    pendingSuggested.length > 0
-      ? createElement('div', { style: card },
-          createElement('div', { style: cardTitle }, '建議待辦(觀測智能體生成)'),
-          pendingSuggested.map((s, i) =>
-            createElement('div', { key: String(i), style: row },
-              createElement('span', { style: { flex: 1, minWidth: 0 } },
-                createElement('div', null, s.content),
-                s.why !== '' ? createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, s.why) : null),
-              createElement('button', { style: sendBtnSmall, onClick: () => void post('add-todo', { content: s.content, source: 'auto' }) }, '採納'))))
-      : null,
     createElement('div', { style: card },
       createElement('div', { style: cardTitle }, `待辦(${todos.filter((t) => !t.done).length} 未完成 / ${todos.length} 總計)`),
-      todos.length === 0 ? createElement('div', { style: emptyText }, '尚無待辦——手寫一條,或等觀測智能體生成建議。') : todoRows,
+      todos.length === 0 ? createElement('div', { style: emptyText }, '尚無待辦——手寫一條,或在對話中選取文字加筆記。') : todoRows,
       createElement('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
         createElement('input', {
           style: textInput,
@@ -422,22 +443,8 @@ function NotesView(props: ViewProps): ReactNode {
         createElement('button', { style: sendBtnSmall, onClick: () => { if (todoText.trim() !== '') { void post('add-todo', { content: todoText.trim(), source: 'user' }); setTodoText('') } } }, '新增'))),
     createElement('div', { style: card },
       createElement('div', { style: cardTitle }, `筆記(${notes.length})`),
-      notes.length === 0 ? createElement('div', { style: emptyText }, '尚無筆記——把想法、卡點、靈感記在這裡,per-session 持久。') : noteRows,
-      createElement('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
-        createElement('input', {
-          style: textInput,
-          placeholder: '寫一條筆記…(Enter 送出)',
-          value: noteText,
-          onChange: (e: { target: { value: string } }) => setNoteText(e.target.value),
-          onKeyDown: (e: { key: string; preventDefault: () => void }) => {
-            if (e.key === 'Enter' && noteText.trim() !== '') {
-              e.preventDefault()
-              void post('add-note', { text: noteText.trim() })
-              setNoteText('')
-            }
-          },
-        }),
-        createElement('button', { style: sendBtnSmall, onClick: () => { if (noteText.trim() !== '') { void post('add-note', { text: noteText.trim() }); setNoteText('') } } }, '新增'))))
+      notes.length === 0 ? createElement('div', { style: emptyText }, '尚無筆記——把想法、卡點、靈感記在這裡,per-session 持久;支援 Markdown。') : noteRows,
+      createElement(NoteComposer, null)))
 }
 
 export function applyPerspectivesViews(ctx: ClientCtx): void {
