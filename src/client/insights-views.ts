@@ -389,7 +389,8 @@ function NotesView(props: ViewProps): ReactNode {
   // 筆記正文:原生 Markdown 渲染(與記憶頁/洞察頁同一管線)
   const noteRows = notes.slice().reverse().map((n) =>
     createElement('div', { key: String(n.seq), style: noteCard },
-      createElement('div', { style: { flex: 1, minWidth: 0 } }, createElement(Md, { text: n.text })),
+      // 筆記是使用者手寫內容:不剝「[標籤]」前綴(那是記憶 row 的呈現慣例)
+      createElement('div', { style: { flex: 1, minWidth: 0 } }, createElement(Md, { text: n.text, stripTagPrefix: false })),
       createElement('span', { style: { cursor: 'pointer', color: 'var(--dsw-alias-label-tertiary)', flex: 'none' }, title: '刪除', onClick: () => void post('delete-note', { seq: n.seq }) }, '✕')))
 
   // 輸入區:多行 textarea,Enter 送出 / Shift+Enter 換行;粘貼保留原始排版
